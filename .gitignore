@@ -1,2 +1,4 @@
 /drivesync
 dist/
+gui/target/
+gui/vendor/

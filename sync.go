@@ -37,6 +37,7 @@ type Entry struct {
 type State struct {
 	PageToken string            `json:"page_token"`
 	Entries   map[string]*Entry `json:"entries"`
+	Incidents map[string]string `json:"incidents,omitempty"`
 }
 
 type localItem struct {
@@ -64,12 +65,29 @@ const (
 	actionTrashRemote
 	actionTrashLocal
 	actionForget
+	actionRestoreRemote
 )
 
 type step struct {
 	path   string
 	action action
 }
+
+func (st step) transfer() bool {
+	return st.action == actionDownload || st.action == actionUpload || st.action == actionConflict || st.action == actionRestoreRemote
+}
+
+type folderPlan struct {
+	name         string
+	steps        []step
+	folders      []string
+	blockDeletes bool
+}
+
+const (
+	decisionDelete = "delete"
+	decisionKeep   = "keep"
+)
 
 type syncer struct {
 	drive       *Drive
@@ -96,7 +114,7 @@ func loadState() (*State, string, error) {
 		return nil, "", err
 	}
 	statePath := filepath.Join(dir, "state.json")
-	state := &State{Entries: map[string]*Entry{}}
+	state := &State{Entries: map[string]*Entry{}, Incidents: map[string]string{}}
 	data, err := os.ReadFile(statePath)
 	if errors.Is(err, fs.ErrNotExist) {
 		return state, statePath, nil
@@ -109,6 +127,9 @@ func loadState() (*State, string, error) {
 	}
 	if state.Entries == nil {
 		state.Entries = map[string]*Entry{}
+	}
+	if state.Incidents == nil {
+		state.Incidents = map[string]string{}
 	}
 	return state, statePath, nil
 }
@@ -236,9 +257,13 @@ func (s *syncer) cycle(ctx context.Context) error {
 		s.status.set(statusNoFolders, "")
 		return s.saveState()
 	}
+	s.status.leaveWaitingState("Checking for changes")
 	if s.rootID == "" {
 		if s.rootID, err = s.drive.RootID(ctx); err != nil {
 			return err
+		}
+		if account, err := s.drive.Account(ctx); err == nil {
+			s.status.setAccount(account)
 		}
 	}
 	if err := s.refreshRemote(ctx); err != nil {
@@ -249,19 +274,51 @@ func (s *syncer) cycle(ctx context.Context) error {
 	}
 	s.buildRemote()
 	s.trashedIDs = map[string]bool{}
+	s.local = map[string]localItem{}
+	s.status.beginAttention()
+	for name := range s.state.Incidents {
+		if !slices.Contains(cfg.Folders, name) {
+			delete(s.state.Incidents, name)
+		}
+	}
 	var folderErr error
+	var plans []*folderPlan
 	for _, name := range cfg.Folders {
+		plan, err := s.planFolder(name)
+		if err != nil {
+			s.status.event(eventError, name, err.Error())
+			folderErr = err
+			continue
+		}
+		plans = append(plans, plan)
+	}
+	files, bytes := 0, int64(0)
+	for _, plan := range plans {
+		for _, st := range plan.steps {
+			if plan.blockDeletes && (st.action == actionTrashRemote || st.action == actionTrashLocal) {
+				continue
+			}
+			if st.transfer() {
+				files++
+				bytes += s.transferSize(st)
+			}
+		}
+	}
+	s.status.startProgress(files, bytes)
+	for _, plan := range plans {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err := s.syncFolder(ctx, name); err != nil {
-			s.status.event(eventError, name, err.Error())
+		if err := s.executePlan(ctx, plan); err != nil {
+			s.status.event(eventError, plan.name, err.Error())
 			folderErr = err
 		}
 		if err := s.saveState(); err != nil {
 			return err
 		}
 	}
+	s.status.endProgress()
+	s.status.endAttention()
 	if folderErr != nil {
 		s.status.set(statusError, folderErr.Error())
 		return nil
@@ -297,6 +354,7 @@ func (s *syncer) refreshRemote(ctx context.Context) error {
 		}
 		next = token
 	}
+	s.status.set(statusSyncing, "Looking through your Drive")
 	files, err := s.drive.ListAll(ctx)
 	if err != nil {
 		return err
@@ -411,7 +469,7 @@ func (s *syncer) scanLocal(name string) (map[string]localItem, error) {
 	return items, err
 }
 
-func (s *syncer) syncFolder(ctx context.Context, name string) error {
+func (s *syncer) planFolder(name string) (*folderPlan, error) {
 	known := 0
 	for p := range s.state.Entries {
 		if under(p, name) && p != name {
@@ -421,37 +479,39 @@ func (s *syncer) syncFolder(ctx context.Context, name string) error {
 	rootFolder := s.remote[name]
 	if rootFolder == nil {
 		if known > 0 {
-			return errors.New("folder is gone from My Drive; restore it from the Drive trash or unselect it (local copy is untouched)")
+			return nil, errors.New("folder is gone from My Drive; restore it from the Drive trash or unselect it (local copy is untouched)")
 		}
-		return errors.New("no top-level folder with this name in My Drive")
+		return nil, errors.New("no top-level folder with this name in My Drive")
 	}
 	base := s.localPath(name)
 	info, err := os.Stat(base)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		if known > 0 {
-			return fmt.Errorf("%s is missing locally; restore it or unselect the folder (Drive is untouched)", base)
+			return nil, fmt.Errorf("%s is missing locally; restore it or unselect the folder (Drive is untouched)", base)
 		}
 		if err := os.MkdirAll(base, 0o755); err != nil {
-			return err
+			return nil, err
 		}
 	case err != nil:
-		return err
+		return nil, err
 	case !info.IsDir():
-		return fmt.Errorf("%s is not a directory", base)
+		return nil, fmt.Errorf("%s is not a directory", base)
 	}
 	s.state.Entries[name] = &Entry{ID: rootFolder.ID, Folder: true}
 
 	local, err := s.scanLocal(name)
 	if err != nil {
-		return fmt.Errorf("scanning local files: %w", err)
+		return nil, fmt.Errorf("scanning local files: %w", err)
 	}
 	if caseInsensitiveNames {
 		if local, err = s.matchRemoteCase(name, local); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	s.local = local
+	for p, item := range local {
+		s.local[p] = item
+	}
 
 	paths := map[string]bool{}
 	for p := range s.remote {
@@ -502,22 +562,54 @@ func (s *syncer) syncFolder(ctx context.Context, name string) error {
 		}
 	}
 
-	blockDeletes := !s.allowDelete && deletions > massDeleteMinimum && deletions*2 > known
-	if blockDeletes {
-		s.status.event(eventWarning, name, fmt.Sprintf("refused to delete %d of %d items in one pass; if that was intended, allow it once", deletions, known))
+	plan := &folderPlan{name: name, steps: steps, folders: folders}
+	plan.blockDeletes = !s.allowDelete && deletions > massDeleteMinimum && deletions*2 > known
+	if !plan.blockDeletes {
+		delete(s.state.Incidents, name)
+		return plan, nil
 	}
-	for _, st := range steps {
+	id := s.state.Incidents[name]
+	if id == "" {
+		id = fmt.Sprintf("mass_delete:%s:%d", name, time.Now().UnixNano())
+		s.state.Incidents[name] = id
+		s.status.event(eventWarning, name, fmt.Sprintf("stopped before deleting %d of %d items; waiting for your answer", deletions, known))
+	}
+	switch s.cfg.Decisions[id] {
+	case decisionDelete:
+		plan.blockDeletes = false
+		delete(s.state.Incidents, name)
+	case decisionKeep:
+		for i, st := range plan.steps {
+			switch st.action {
+			case actionTrashRemote:
+				plan.steps[i].action = actionDownload
+			case actionTrashLocal:
+				plan.steps[i].action = actionRestoreRemote
+			}
+		}
+		delete(s.state.Incidents, name)
+	default:
+		s.status.needAttention(Attention{ID: id, Kind: "mass_delete", Folder: name, Count: deletions, Total: known})
+	}
+	return plan, nil
+}
+
+func (s *syncer) executePlan(ctx context.Context, plan *folderPlan) error {
+	for _, st := range plan.steps {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if blockDeletes && (st.action == actionTrashRemote || st.action == actionTrashLocal) {
+		if plan.blockDeletes && (st.action == actionTrashRemote || st.action == actionTrashLocal) {
 			continue
 		}
 		if err := s.apply(ctx, st); err != nil {
 			s.status.event(eventError, st.path, err.Error())
 		}
+		if st.transfer() {
+			s.status.stepDone()
+		}
 	}
-	return s.syncFolders(ctx, folders, blockDeletes)
+	return s.syncFolders(ctx, plan.folders, plan.blockDeletes)
 }
 
 func (s *syncer) matchRemoteCase(name string, local map[string]localItem) (map[string]localItem, error) {
@@ -690,6 +782,8 @@ func (s *syncer) apply(ctx context.Context, st step) error {
 		return s.download(ctx, p, remote)
 	case actionRecord:
 		return s.record(p, remote)
+	case actionRestoreRemote:
+		return s.upload(ctx, p, "")
 	case actionTrashRemote:
 		if err := s.drive.Trash(ctx, s.state.Entries[p].ID); err != nil {
 			return err
@@ -713,12 +807,26 @@ func (s *syncer) apply(ctx context.Context, st step) error {
 	return nil
 }
 
+func (s *syncer) transferSize(st step) int64 {
+	if st.action == actionUpload || st.action == actionRestoreRemote {
+		if item, ok := s.local[st.path]; ok {
+			return item.Size
+		}
+		return 0
+	}
+	if remote := s.remote[st.path]; remote != nil {
+		return remote.Size
+	}
+	return 0
+}
+
 func (s *syncer) download(ctx context.Context, p string, remote *File) error {
 	full := s.localPath(p)
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return err
 	}
-	if err := s.drive.Download(ctx, remote.ID, full, func() error { return s.unchangedSinceScan(p) }); err != nil {
+	s.status.stepStarted(p, "down", remote.Size)
+	if err := s.drive.Download(ctx, remote.ID, full, func() error { return s.unchangedSinceScan(p) }, s.status.addBytes); err != nil {
 		return err
 	}
 	if err := os.Chtimes(full, time.Now(), remote.ModifiedTime); err != nil {
@@ -748,7 +856,8 @@ func (s *syncer) upload(ctx context.Context, p, id string) error {
 	if err != nil {
 		return err
 	}
-	uploaded, err := s.drive.Upload(ctx, id, path.Base(p), parentID, full, info.ModTime())
+	s.status.stepStarted(p, "up", info.Size())
+	uploaded, err := s.drive.Upload(ctx, id, path.Base(p), parentID, full, info.ModTime(), s.status.addBytes)
 	if err != nil {
 		return err
 	}

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<component type="console-application">
+<component type="desktop-application">
   <id>io.github.celso_alexandre.drivesync</id>
   <name>drivesync</name>
   <summary>Unofficial two-way sync of selected Google Drive folders</summary>
@@ -10,7 +10,7 @@
   </developer>
   <description>
     <p>
-      drivesync mirrors the Google Drive folders you choose into a local folder and keeps both sides in sync.
+      drivesync keeps the Google Drive folders you choose on your computer and in sync, from a tray icon. A wizard walks you through connecting your Google account.
       It is an independent project, not affiliated with or endorsed by Google, and it is very early software: keep a backup.
     </p>
     <p>
@@ -20,7 +20,9 @@
   </description>
   <url type="homepage">https://github.com/celso-alexandre/drivesync</url>
   <url type="bugtracker">https://github.com/celso-alexandre/drivesync/issues</url>
+  <launchable type="desktop-id">io.github.celso_alexandre.drivesync.desktop</launchable>
   <provides>
+    <binary>drivesync-gui</binary>
     <binary>drivesync</binary>
   </provides>
   <content_rating type="oars-1.1"/>

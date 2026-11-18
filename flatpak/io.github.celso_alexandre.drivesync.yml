@@ -1,20 +1,68 @@
 app-id: io.github.celso_alexandre.drivesync
-runtime: org.freedesktop.Platform
-runtime-version: '25.08'
-sdk: org.freedesktop.Sdk
-command: drivesync
+runtime: org.kde.Platform
+runtime-version: '6.11'
+sdk: org.kde.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: drivesync-gui
 finish-args:
+  - --share=ipc
   - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
   - --filesystem=~/GoogleDrive:create
   - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=org.freedesktop.Notifications
 modules:
-  - name: drivesync
+  - name: secret-tool
+    buildsystem: meson
+    config-opts:
+      - -Dmanpage=false
+      - -Dvapi=false
+      - -Dgtk_doc=false
+      - -Dintrospection=false
+      - -Dbash_completion=disabled
+      - -Dcrypto=disabled
+      - -Dtpm2=false
+    cleanup:
+      - /include
+      - /lib/pkgconfig
+      - /share
+    sources:
+      - type: git
+        url: https://github.com/GNOME/libsecret.git
+        tag: 0.21.8.2
+        commit: 4941c2f3088eb0ea4a180737b02e22320b8ff7a7
+
+  - name: drivesync-engine
     buildsystem: simple
     build-commands:
       - install -Dm755 drivesync /app/bin/drivesync
-      - install -Dm644 io.github.celso_alexandre.drivesync.metainfo.xml /app/share/metainfo/io.github.celso_alexandre.drivesync.metainfo.xml
     sources:
       - type: file
         path: ../dist/drivesync
+
+  - name: drivesync-gui
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/drivesync-gui/cargo-home
+        CARGO_TERM_COLOR: never
+    build-commands:
+      - cargo build --offline --locked --release --config 'source.crates-io.replace-with="vendored"' --config 'source.vendored.directory="vendor"'
+      - install -Dm755 target/release/drivesync-gui /app/bin/drivesync-gui
+      - install -Dm644 icons/drivesync.svg /app/share/icons/hicolor/scalable/apps/io.github.celso_alexandre.drivesync.svg
+      - install -Dm644 io.github.celso_alexandre.drivesync.desktop /app/share/applications/io.github.celso_alexandre.drivesync.desktop
+      - install -Dm644 io.github.celso_alexandre.drivesync.metainfo.xml /app/share/metainfo/io.github.celso_alexandre.drivesync.metainfo.xml
+    sources:
+      - type: dir
+        path: ../gui
+        skip:
+          - target
+      - type: file
+        path: io.github.celso_alexandre.drivesync.desktop
       - type: file
         path: io.github.celso_alexandre.drivesync.metainfo.xml

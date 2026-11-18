@@ -126,3 +126,26 @@ func TestWaitStopsOnCancel(t *testing.T) {
 		t.Fatal("wait did not stop on cancel")
 	}
 }
+
+func TestStatusLeavesStaleStatesWhenWorkStarts(t *testing.T) {
+	h := newHarness(t)
+	h.sync.status = newStatusWriter()
+	cfg, _ := loadConfig()
+	cfg.Folders = nil
+	saveConfig(cfg)
+	h.run()
+	if readStatus(t).State != statusNoFolders {
+		t.Fatal("expected no_folders first")
+	}
+	h.drive.add("Work", "root-id", nil, true)
+	cfg.Folders = []string{"Work"}
+	saveConfig(cfg)
+	h.sync.status.leaveWaitingState("Checking for changes")
+	if got := readStatus(t); got.State != statusSyncing || got.Message != "Checking for changes" {
+		t.Fatalf("stale state kept: %+v", got)
+	}
+	h.run()
+	if readStatus(t).State != statusIdle {
+		t.Fatal("pass did not end idle")
+	}
+}

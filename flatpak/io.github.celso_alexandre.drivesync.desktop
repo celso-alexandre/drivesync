@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=drivesync
+GenericName=Google Drive sync
+Comment=Keep your Google Drive folders in sync (unofficial)
+Exec=drivesync-gui
+Icon=io.github.celso_alexandre.drivesync
+Categories=Network;FileTransfer;Utility;
+Keywords=google;drive;sync;cloud;folder;
+StartupNotify=false
+X-GNOME-UsesNotifications=true

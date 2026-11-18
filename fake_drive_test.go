@@ -220,6 +220,8 @@ func (f *fakeDrive) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON := func(v any) { json.NewEncoder(w).Encode(v) }
 	switch {
+	case p == "/drive/v3/about":
+		writeJSON(map[string]any{"user": map[string]string{"emailAddress": "tester@example.com"}})
 	case p == "/drive/v3/files/root":
 		writeJSON(File{ID: "root-id"})
 	case p == "/drive/v3/files" && r.Method == http.MethodGet:

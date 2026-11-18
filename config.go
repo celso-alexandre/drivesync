@@ -13,11 +13,12 @@ import (
 )
 
 type Config struct {
-	Root            string   `json:"root"`
-	Folders         []string `json:"folders"`
-	IntervalSeconds int      `json:"interval_seconds"`
-	Paused          bool     `json:"paused,omitempty"`
-	SyncRequested   int64    `json:"sync_requested,omitempty"`
+	Root            string            `json:"root"`
+	Folders         []string          `json:"folders"`
+	IntervalSeconds int               `json:"interval_seconds"`
+	Paused          bool              `json:"paused,omitempty"`
+	SyncRequested   int64             `json:"sync_requested,omitempty"`
+	Decisions       map[string]string `json:"decisions,omitempty"`
 }
 
 func configPath() (string, error) {

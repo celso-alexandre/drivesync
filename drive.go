@@ -181,7 +181,30 @@ func (d *Drive) Changes(ctx context.Context, pageToken string) (bool, string, er
 	}
 }
 
-func (d *Drive) Download(ctx context.Context, id, dest string, beforeReplace func() error) error {
+type countingReader struct {
+	reader io.Reader
+	add    func(int64)
+}
+
+func (c countingReader) Read(p []byte) (int, error) {
+	n, err := c.reader.Read(p)
+	if n > 0 && c.add != nil {
+		c.add(int64(n))
+	}
+	return n, err
+}
+
+func (d *Drive) Account(ctx context.Context) (string, error) {
+	var about struct {
+		User struct {
+			EmailAddress string `json:"emailAddress"`
+		} `json:"user"`
+	}
+	err := d.call(ctx, http.MethodGet, apiBase+"/about?fields=user(emailAddress)", nil, &about)
+	return about.User.EmailAddress, err
+}
+
+func (d *Drive) Download(ctx context.Context, id, dest string, beforeReplace func() error, onBytes func(int64)) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+"/files/"+url.PathEscape(id)+"?alt=media", nil)
 	if err != nil {
 		return err
@@ -195,7 +218,7 @@ func (d *Drive) Download(ctx context.Context, id, dest string, beforeReplace fun
 	if err != nil {
 		return err
 	}
-	_, err = io.Copy(tmp, resp.Body)
+	_, err = io.Copy(tmp, countingReader{reader: resp.Body, add: onBytes})
 	if closeErr := tmp.Close(); err == nil {
 		err = closeErr
 	}
@@ -221,7 +244,7 @@ func (d *Drive) CreateFolder(ctx context.Context, name, parentID string) (*File,
 	return &folder, err
 }
 
-func (d *Drive) Upload(ctx context.Context, fileID, name, parentID, localPath string, modified time.Time) (*File, error) {
+func (d *Drive) Upload(ctx context.Context, fileID, name, parentID, localPath string, modified time.Time, onBytes func(int64)) (*File, error) {
 	source, err := os.Open(localPath)
 	if err != nil {
 		return nil, err
@@ -260,7 +283,7 @@ func (d *Drive) Upload(ctx context.Context, fileID, name, parentID, localPath st
 		return nil, errors.New("upload session without a Location header")
 	}
 
-	put, err := http.NewRequestWithContext(ctx, http.MethodPut, session, source)
+	put, err := http.NewRequestWithContext(ctx, http.MethodPut, session, countingReader{reader: source, add: onBytes})
 	if err != nil {
 		return nil, err
 	}

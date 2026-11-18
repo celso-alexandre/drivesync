@@ -2,3 +2,5 @@
 dist/
 gui/target/
 gui/vendor/
+.flatpak-builder/
+flatpak-build/

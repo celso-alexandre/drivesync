@@ -28,9 +28,12 @@ ApplicationWindow {
     readonly property color good: "#3aa874"
     readonly property color warn: "#d9822b"
 
-    property real lastBytes: 0
-    property real lastBytesAt: 0
+    property var samples: []
     property real speed: 0
+    property real etaSeconds: -1
+    property real etaShownAt: 0
+    readonly property real sampleWindow: 60000
+    readonly property real minimumWindow: 10000
 
     title: "drivesync"
     width: 460
@@ -350,17 +353,36 @@ ApplicationWindow {
 
     onProgressChanged: {
         if (!progress) {
+            samples = []
             speed = 0
-            lastBytesAt = 0
+            etaSeconds = -1
             return
         }
         const now = Date.now()
-        if (lastBytesAt > 0 && now > lastBytesAt && progress.bytes_done >= lastBytes) {
-            const sample = (progress.bytes_done - lastBytes) * 1000 / (now - lastBytesAt)
-            speed = speed > 0 ? speed * 0.7 + sample * 0.3 : sample
+        let list = samples.filter(s => now - s.at <= sampleWindow && s.bytes <= progress.bytes_done && s.files <= progress.files_done)
+        list.push({ at: now, bytes: progress.bytes_done, files: progress.files_done })
+        samples = list
+        const first = list[0]
+        const elapsed = (now - first.at) / 1000
+        if (now - first.at < minimumWindow || elapsed <= 0) {
+            speed = 0
+            etaSeconds = -1
+            return
         }
-        lastBytes = progress.bytes_done
-        lastBytesAt = now
+        const byteRate = (progress.bytes_done - first.bytes) / elapsed
+        const fileRate = (progress.files_done - first.files) / elapsed
+        speed = byteRate
+        const bytesLeft = Math.max(0, progress.bytes - progress.bytes_done)
+        const filesLeft = Math.max(0, progress.files - progress.files_done)
+        const byBytes = byteRate > 0 ? bytesLeft / byteRate : Infinity
+        const byFiles = fileRate > 0 ? filesLeft / fileRate : Infinity
+        const estimate = Math.max(bytesLeft > 0 ? byBytes : 0, filesLeft > 0 ? byFiles : 0)
+        if (!isFinite(estimate))
+            return
+        if (etaSeconds < 0 || now - etaShownAt >= 5000) {
+            etaSeconds = estimate
+            etaShownAt = now
+        }
     }
 
     Backend {
@@ -487,10 +509,10 @@ ApplicationWindow {
                 value: window.progress && window.progress.bytes > 0 ? window.progress.bytes_done / window.progress.bytes : 0
             }
             RowLayout {
-                visible: !!window.progress && window.speed > 0
+                visible: !!window.progress && window.etaSeconds >= 0
                 Layout.fillWidth: true
                 Label {
-                    text: window.progress && window.speed > 0 ? window.tr("About %1 left", window.duration((window.progress.bytes - window.progress.bytes_done) / window.speed)) : ""
+                    text: window.etaSeconds >= 0 ? window.tr("About %1 left", window.duration(window.etaSeconds)) : ""
                     color: window.muted
                     font.pointSize: Qt.application.font.pointSize * 0.9
                     Layout.fillWidth: true
@@ -589,7 +611,7 @@ ApplicationWindow {
                 }
 
                 ColumnLayout {
-                    visible: !!window.progress && !!window.progress.current
+                    visible: !!window.progress && !!window.progress.active && window.progress.active.length > 0
                     spacing: 8
                     Layout.fillWidth: true
                     SectionLabel { text: window.tr("Now"); Layout.leftMargin: 22 }
@@ -597,26 +619,33 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.leftMargin: 14
                         Layout.rightMargin: 14
-                        implicitHeight: nowColumn.implicitHeight + 24
+                        implicitHeight: activeColumn.implicitHeight + 16
                         ColumnLayout {
-                            id: nowColumn
-                            anchors.fill: parent
+                            id: activeColumn
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
                             anchors.margins: 12
-                            spacing: 6
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Label { text: window.progress && window.progress.current ? window.baseName(window.progress.current) : ""; elide: Text.ElideMiddle; Layout.fillWidth: true }
-                                Label {
-                                    text: window.progress && window.progress.current_bytes > 0 ? window.bytes(window.progress.current_done) + " / " + window.bytes(window.progress.current_bytes) : ""
-                                    color: window.muted
-                                    font.pointSize: Qt.application.font.pointSize * 0.9
+                            anchors.topMargin: 8
+                            spacing: 10
+                            Repeater {
+                                model: window.progress && window.progress.active ? window.progress.active : []
+                                delegate: ColumnLayout {
+                                    required property var modelData
+                                    spacing: 4
+                                    Layout.fillWidth: true
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Label { text: (modelData.direction === "up" ? "↑ " : "↓ ") + window.baseName(modelData.path); elide: Text.ElideMiddle; Layout.fillWidth: true }
+                                        Label {
+                                            text: modelData.bytes > 0 ? window.bytes(modelData.done) + " / " + window.bytes(modelData.bytes) : ""
+                                            color: window.muted
+                                            font.pointSize: Qt.application.font.pointSize * 0.9
+                                        }
+                                    }
+                                    ProgressBar { Layout.fillWidth: true; value: modelData.bytes > 0 ? modelData.done / modelData.bytes : 0 }
                                 }
                             }
-                            ProgressBar {
-                                Layout.fillWidth: true
-                                value: window.progress && window.progress.current_bytes > 0 ? window.progress.current_done / window.progress.current_bytes : 0
-                            }
-                            Label { text: window.progress && window.progress.current ? window.folderOf(window.progress.current) : ""; color: window.muted; elide: Text.ElideMiddle; font.pointSize: Qt.application.font.pointSize * 0.9; Layout.fillWidth: true }
                         }
                     }
                 }

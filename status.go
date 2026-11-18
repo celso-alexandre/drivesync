@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -45,15 +46,19 @@ type Attention struct {
 	Total  int    `json:"total,omitempty"`
 }
 
+type Transfer struct {
+	Path      string `json:"path"`
+	Direction string `json:"direction"`
+	Bytes     int64  `json:"bytes"`
+	Done      int64  `json:"done"`
+}
+
 type Progress struct {
-	Files        int    `json:"files"`
-	FilesDone    int    `json:"files_done"`
-	Bytes        int64  `json:"bytes"`
-	BytesDone    int64  `json:"bytes_done"`
-	Current      string `json:"current,omitempty"`
-	Direction    string `json:"direction,omitempty"`
-	CurrentBytes int64  `json:"current_bytes,omitempty"`
-	CurrentDone  int64  `json:"current_done,omitempty"`
+	Files     int        `json:"files"`
+	FilesDone int        `json:"files_done"`
+	Bytes     int64      `json:"bytes"`
+	BytesDone int64      `json:"bytes_done"`
+	Active    []Transfer `json:"active"`
 }
 
 type Status struct {
@@ -68,6 +73,7 @@ type Status struct {
 }
 
 type statusWriter struct {
+	mu        sync.Mutex
 	path      string
 	status    Status
 	attention []Attention
@@ -77,7 +83,12 @@ type statusWriter struct {
 const progressSaveInterval = 500 * time.Millisecond
 
 func (w *statusWriter) setAccount(account string) {
-	if w == nil || w.status.Account == account {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.status.Account == account {
 		return
 	}
 	w.status.Account = account
@@ -88,6 +99,8 @@ func (w *statusWriter) beginAttention() {
 	if w == nil {
 		return
 	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.attention = []Attention{}
 }
 
@@ -95,6 +108,8 @@ func (w *statusWriter) needAttention(item Attention) {
 	if w == nil {
 		return
 	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.attention = append(w.attention, item)
 }
 
@@ -102,6 +117,8 @@ func (w *statusWriter) endAttention() {
 	if w == nil {
 		return
 	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.status.Attention = w.attention
 	w.save()
 }
@@ -110,36 +127,72 @@ func (w *statusWriter) startProgress(files int, bytes int64) {
 	if w == nil {
 		return
 	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if files == 0 {
 		w.status.Progress = nil
 		return
 	}
-	w.status.Progress = &Progress{Files: files, Bytes: bytes}
+	w.status.Progress = &Progress{Files: files, Bytes: bytes, Active: []Transfer{}}
 	w.status.State = statusSyncing
 	w.status.Message = ""
 	w.save()
 }
 
-func (w *statusWriter) stepStarted(path, direction string, size int64) {
-	if w == nil || w.status.Progress == nil {
-		return
+func (w *statusWriter) startTransfer(path, direction string, size int64) func(int64) {
+	if w == nil {
+		return func(int64) {}
 	}
-	p := w.status.Progress
-	p.Current, p.Direction, p.CurrentBytes, p.CurrentDone = path, direction, size, 0
-	w.saveThrottled()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.status.Progress != nil {
+		w.status.Progress.Active = append(w.status.Progress.Active, Transfer{Path: path, Direction: direction, Bytes: size})
+		w.saveThrottled()
+	}
+	return func(n int64) {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		p := w.status.Progress
+		if p == nil {
+			return
+		}
+		p.BytesDone += n
+		for i := range p.Active {
+			if p.Active[i].Path == path {
+				p.Active[i].Done += n
+				break
+			}
+		}
+		w.saveThrottled()
+	}
 }
 
-func (w *statusWriter) addBytes(n int64) {
-	if w == nil || w.status.Progress == nil {
+func (w *statusWriter) endTransfer(path string) {
+	if w == nil {
 		return
 	}
-	w.status.Progress.CurrentDone += n
-	w.status.Progress.BytesDone += n
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	p := w.status.Progress
+	if p == nil {
+		return
+	}
+	for i := range p.Active {
+		if p.Active[i].Path == path {
+			p.Active = append(p.Active[:i], p.Active[i+1:]...)
+			break
+		}
+	}
 	w.saveThrottled()
 }
 
 func (w *statusWriter) stepDone() {
-	if w == nil || w.status.Progress == nil {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.status.Progress == nil {
 		return
 	}
 	w.status.Progress.FilesDone++
@@ -147,11 +200,30 @@ func (w *statusWriter) stepDone() {
 }
 
 func (w *statusWriter) endProgress() {
-	if w == nil || w.status.Progress == nil {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.status.Progress == nil {
 		return
 	}
 	w.status.Progress = nil
 	w.save()
+}
+
+func (w *statusWriter) progressSnapshot() *Progress {
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.status.Progress == nil {
+		return nil
+	}
+	copied := *w.status.Progress
+	copied.Active = append([]Transfer(nil), w.status.Progress.Active...)
+	return &copied
 }
 
 func (w *statusWriter) saveThrottled() {
@@ -183,6 +255,12 @@ func (w *statusWriter) set(state, message string) {
 	if w == nil {
 		return
 	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.setLocked(state, message)
+}
+
+func (w *statusWriter) setLocked(state, message string) {
 	if state == statusIdle {
 		w.status.LastSync = time.Now()
 	}
@@ -198,9 +276,11 @@ func (w *statusWriter) leaveWaitingState(message string) {
 	if w == nil {
 		return
 	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	switch w.status.State {
 	case "", statusStarting, statusNoFolders, statusPaused, statusSignedOut:
-		w.set(statusSyncing, message)
+		w.setLocked(statusSyncing, message)
 	}
 }
 
@@ -213,6 +293,8 @@ func (w *statusWriter) event(kind, path, detail string) {
 	if w == nil {
 		return
 	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.status.Recent = append([]Event{{Time: time.Now(), Kind: kind, Path: path, Detail: detail}}, w.status.Recent...)
 	if len(w.status.Recent) > recentEventLimit {
 		w.status.Recent = w.status.Recent[:recentEventLimit]

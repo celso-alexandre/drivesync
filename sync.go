@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -106,7 +107,11 @@ type syncer struct {
 	trashedIDs  map[string]bool
 	warned      map[string]bool
 	status      *statusWriter
+	mu          sync.Mutex
+	folderMu    sync.Mutex
 }
+
+const transferWorkers = 4
 
 func loadState() (*State, string, error) {
 	dir, err := stateDir()
@@ -595,6 +600,7 @@ func (s *syncer) planFolder(name string) (*folderPlan, error) {
 }
 
 func (s *syncer) executePlan(ctx context.Context, plan *folderPlan) error {
+	var transfers []step
 	for _, st := range plan.steps {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -602,14 +608,53 @@ func (s *syncer) executePlan(ctx context.Context, plan *folderPlan) error {
 		if plan.blockDeletes && (st.action == actionTrashRemote || st.action == actionTrashLocal) {
 			continue
 		}
-		if err := s.apply(ctx, st); err != nil {
+		if st.transfer() {
+			transfers = append(transfers, st)
+			continue
+		}
+		if err := s.apply(ctx, st, s.remoteFile(st.path)); err != nil {
 			s.status.event(eventError, st.path, err.Error())
 		}
-		if st.transfer() {
-			s.status.stepDone()
-		}
+	}
+	s.runTransfers(ctx, transfers)
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 	return s.syncFolders(ctx, plan.folders, plan.blockDeletes)
+}
+
+func (s *syncer) remoteFile(p string) *File {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.remote[p]
+}
+
+func (s *syncer) runTransfers(ctx context.Context, steps []step) {
+	if len(steps) == 0 {
+		return
+	}
+	work := make(chan step)
+	var wg sync.WaitGroup
+	for range min(transferWorkers, len(steps)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for st := range work {
+				if err := s.apply(ctx, st, s.remoteFile(st.path)); err != nil {
+					s.status.event(eventError, st.path, err.Error())
+				}
+				s.status.stepDone()
+			}
+		}()
+	}
+	for _, st := range steps {
+		if ctx.Err() != nil {
+			break
+		}
+		work <- st
+	}
+	close(work)
+	wg.Wait()
 }
 
 func (s *syncer) matchRemoteCase(name string, local map[string]localItem) (map[string]localItem, error) {
@@ -757,9 +802,8 @@ func fileMD5(full string) (string, error) {
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
-func (s *syncer) apply(ctx context.Context, st step) error {
+func (s *syncer) apply(ctx context.Context, st step, remote *File) error {
 	p := st.path
-	remote := s.remote[p]
 	switch st.action {
 	case actionDownload:
 		return s.download(ctx, p, remote)
@@ -825,8 +869,9 @@ func (s *syncer) download(ctx context.Context, p string, remote *File) error {
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return err
 	}
-	s.status.stepStarted(p, "down", remote.Size)
-	if err := s.drive.Download(ctx, remote.ID, full, func() error { return s.unchangedSinceScan(p) }, s.status.addBytes); err != nil {
+	progress := s.status.startTransfer(p, "down", remote.Size)
+	defer s.status.endTransfer(p)
+	if err := s.drive.Download(ctx, remote.ID, full, func() error { return s.unchangedSinceScan(p) }, progress); err != nil {
 		return err
 	}
 	if err := os.Chtimes(full, time.Now(), remote.ModifiedTime); err != nil {
@@ -842,7 +887,9 @@ func (s *syncer) record(p string, remote *File) error {
 		return err
 	}
 	item := toLocalItem(info)
+	s.mu.Lock()
 	s.state.Entries[p] = &Entry{ID: remote.ID, MD5: remote.MD5, Size: item.Size, LocalModified: item.Modified, LocalChanged: item.Changed}
+	s.mu.Unlock()
 	return nil
 }
 
@@ -856,26 +903,38 @@ func (s *syncer) upload(ctx context.Context, p, id string) error {
 	if err != nil {
 		return err
 	}
-	s.status.stepStarted(p, "up", info.Size())
-	uploaded, err := s.drive.Upload(ctx, id, path.Base(p), parentID, full, info.ModTime(), s.status.addBytes)
+	progress := s.status.startTransfer(p, "up", info.Size())
+	defer s.status.endTransfer(p)
+	uploaded, err := s.drive.Upload(ctx, id, path.Base(p), parentID, full, info.ModTime(), progress)
 	if err != nil {
 		return err
 	}
-	s.remote[p] = uploaded
 	item := toLocalItem(info)
+	s.mu.Lock()
+	s.remote[p] = uploaded
 	s.state.Entries[p] = &Entry{ID: uploaded.ID, MD5: uploaded.MD5, Size: item.Size, LocalModified: item.Modified, LocalChanged: item.Changed}
+	s.mu.Unlock()
 	s.status.event(eventUploaded, p, "")
 	return nil
 }
 
 func (s *syncer) ensureRemoteFolder(ctx context.Context, p string) (string, error) {
-	if id, ok := s.folderIDs[p]; ok {
+	s.folderMu.Lock()
+	defer s.folderMu.Unlock()
+	return s.ensureRemoteFolderLocked(ctx, p)
+}
+
+func (s *syncer) ensureRemoteFolderLocked(ctx context.Context, p string) (string, error) {
+	s.mu.Lock()
+	id, ok := s.folderIDs[p]
+	s.mu.Unlock()
+	if ok {
 		return id, nil
 	}
 	if !strings.Contains(p, "/") {
 		return "", fmt.Errorf("top-level folder %s is not in Drive", p)
 	}
-	parentID, err := s.ensureRemoteFolder(ctx, path.Dir(p))
+	parentID, err := s.ensureRemoteFolderLocked(ctx, path.Dir(p))
 	if err != nil {
 		return "", err
 	}
@@ -883,9 +942,11 @@ func (s *syncer) ensureRemoteFolder(ctx context.Context, p string) (string, erro
 	if err != nil {
 		return "", err
 	}
+	s.mu.Lock()
 	s.folderIDs[p] = folder.ID
 	s.remote[p] = folder
 	s.state.Entries[p] = &Entry{ID: folder.ID, Folder: true}
+	s.mu.Unlock()
 	s.status.event(eventFolderCreated, p, "folder created in Drive")
 	return folder.ID, nil
 }

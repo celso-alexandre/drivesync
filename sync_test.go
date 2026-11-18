@@ -318,7 +318,10 @@ func TestDuplicateRemoteNamesAreNotClobbered(t *testing.T) {
 func TestUnusualNames(t *testing.T) {
 	h := newHarness(t)
 	work := h.drive.add("Work", "root-id", nil, true)
-	names := []string{"ação ñ 日本.txt", "with space", ".hidden", "empty.bin", "semi;colon&amp", "a'quote\"s"}
+	names := []string{"ação ñ 日本.txt", "with space", ".hidden", "empty.bin", "semi;colon&amp", "a'quote"}
+	if runtime.GOOS != "windows" {
+		names = append(names, "double\"quote", "back\\slash", "colon:name")
+	}
 	for _, name := range names {
 		content := []byte("content of " + name)
 		if name == "empty.bin" {
@@ -503,6 +506,9 @@ func TestRootChangeStopsTheLoop(t *testing.T) {
 }
 
 func TestStateFileIsPrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows protects the state file with the profile's access list, not mode bits")
+	}
 	h := newHarness(t)
 	h.drive.add("Work", "root-id", nil, true)
 	h.run()
@@ -533,8 +539,12 @@ func TestCaseOnlyRemoteRenameOnCaseInsensitiveSystems(t *testing.T) {
 	if !h.drive.live(file) {
 		t.Fatal("case-only rename deleted the file in Drive")
 	}
-	if h.read("Work/report.txt") != "content" || h.exists("Work/Report.txt") {
-		t.Fatal("case-only rename was not applied locally")
+	entries, err := os.ReadDir(h.full("Work"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "report.txt" || h.read("Work/report.txt") != "content" {
+		t.Fatalf("case-only rename was not applied locally: %v", entries)
 	}
 	files, _ := h.drive.tree(work)
 	if len(files) != 1 {

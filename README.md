@@ -4,8 +4,8 @@
 
 > [!WARNING]
 > **Very early software. Use at your own risk.**
-> drivesync is a young project with a single developer. It is heavily tested, but it has not yet been used by many people on many machines.
-> Before you point it at data you care about, **keep a separate backup**. It's also a good idea to try it first on a test folder.
+> drivesync is a young project with a single developer. It has an automated test suite, but it has barely been used on real accounts yet. Expect bugs.
+> Before you point it at data you care about, **keep a separate backup**, and try it first on a test folder.
 
 > [!NOTE]
 > drivesync is an **unofficial**, independent project. It is not made, endorsed or supported by Google.
@@ -15,13 +15,13 @@
 
 ## Why
 
-Google's own desktop client exists only for Windows and macOS, and it wants the whole machine. drivesync is the small, auditable alternative: pick some Drive folders, get a real local copy, and keep both sides in sync.
+Google's own desktop client exists only for Windows and macOS. drivesync aims to be a small, auditable alternative that also runs on Linux: pick some Drive folders, get a real local copy, and keep both sides in sync.
 
 - **Selective sync:** mirror only the top-level folders you pick, not your whole Drive.
 - **Real files on disk:** they work offline, with any app, and are indexed by your desktop search.
 - **Two-way:** edits, new files, renames and deletions flow in both directions.
-- **Careful with your data:** nothing is ever deleted outright, and conflicts keep both versions.
-- **Sandboxed:** even a bug or a compromised build can't reach the rest of your system.
+- **Careful with your data:** deleted files go to a trash (Drive's or a local one) rather than being erased, and conflicts keep both versions.
+- **Sandboxed:** the part that talks to Drive runs with operating-system restrictions that limit what a bug could touch.
 - **One static binary:** written in Go using only the standard library.
 
 ## How it keeps your data safe
@@ -36,16 +36,18 @@ Google's own desktop client exists only for Windows and macOS, and it wants the 
 | More than half of a folder would be deleted in one pass | **Refuses** and logs a warning. Run `drivesync sync --allow-delete` if you really meant it. |
 | A synced folder goes missing locally (unmounted disk, typo) | Stops syncing that folder. It **never** treats a missing folder as "delete everything". |
 | You edit a file while it is being synced | Detects the change, leaves your file alone, and retries on the next pass. |
-| Network or API errors | The pass stops early without changing anything else, and the next pass picks up where it left off. |
+| Network or API errors | If listing Drive fails, the pass stops before changing anything. If a single file fails, that file is skipped and retried on the next pass while the rest continue. |
 | A Drive name your system can't store (`CON`, `a:b`, or `A.txt` next to `a.txt` on macOS/Windows) | Skips it with a warning and never overwrites one with the other. |
 
-Downloads go to a temporary file first and are renamed into place only when complete, so a crash never leaves a half-written file behind.
+Downloads go to a temporary file first and are renamed into place only when complete, so an interrupted download doesn't replace your file with a partial one.
+
+Folders that end up empty are removed directly rather than moved to a trash, and the Drive trash empties itself after 30 days, so "nothing is lost" holds only within those limits.
 
 ## Security
 
 drivesync holds a token that can read and write your Drive, so it's designed to need as little trust as possible.
 
-**No third-party code.** drivesync uses only the Go standard library. There is no `go.sum` and no dependency tree that could be compromised, and a test fails the build if one is ever added. Even the development and CI environments run without network access.
+**No third-party code in the sync engine.** It uses only the Go standard library. There is no `go.sum`, and a test fails the build if a dependency is ever added. The Linux development container runs with no network access. CI and release builds do use the network, for example to download Go and the Flatpak runtime.
 
 **Your keys, your keychain.** You sign in with your own Google Cloud OAuth client, so no third party ever holds a key to your Drive. The sign-in is kept in the system's own secret store: KWallet or GNOME Keyring on Linux (through Secret Service), the Keychain on macOS, and Credential Manager on Windows. It never touches a plain file.
 
@@ -57,16 +59,20 @@ drivesync holds a token that can read and write your Drive, so it's designed to 
 | Files | Only the sync folder, its state and its config | Only the sync folder, its state and its config | Only the sync folder, its state and its config |
 | Network | Outgoing TCP to ports 443 and 53 only | Outgoing TCP to ports 443 and 53 only | Outgoing internet only (any port) |
 | Starting other programs | Blocked | Blocked | Blocked |
-| Other processes | Can't debug or signal them | Can't debug them | Can't debug them |
+| Other processes | Can't debug or signal them | Expected from the profile, not yet tested | Expected from AppContainer, not yet tested |
 | Kernel attack surface | Blocks namespaces, BPF, io_uring, keyrings and module loading | Default macOS sandbox rules | Default AppContainer rules |
 
-The restrictions can't be lifted from the inside. If the sandbox can't be set up, drivesync **refuses to start**. On macOS and Windows the worker also checks itself before syncing anything: if it can still read your home folder or start a program, it stops. `--unsafe-no-sandbox` turns all of this off and prints a warning every time.
+The restrictions can't be lifted from the inside. If the sandbox can't be set up, the sync **refuses to start**. On macOS and Windows the worker also checks itself before syncing anything: if it can still read your home folder or start a program, it stops. `--unsafe-no-sandbox` turns all of this off and prints a warning every time.
+
+How much of this is verified: on Linux, automated tests try each escape listed above and expect it to fail. On macOS and Windows, CI runs a smaller self-test (`drivesync selftest-sandbox`) on one OS version each (macOS 15, Windows Server 2025). It checks file access, starting programs and network access, and nothing more.
 
 On macOS and Windows, a small launcher reads your sign-in from the system keychain and hands it to the sandboxed worker. `login`, `logout`, `select` and `status` run in that launcher without the sandbox. They are short, local or single-request commands, and on Linux they are sandboxed too.
 
 On Windows, drivesync grants its AppContainer access to the sync, state and config folders by adding an entry to each folder's permissions.
 
-**What the sandbox can't do.** It limits *ports*, not *hosts*. A compromised build could still send your Drive data to some other HTTPS server. To pin drivesync to Google's servers only, add an application firewall such as [OpenSnitch](https://github.com/evilsocket/opensnitch) (Linux), Little Snitch or LuLu (macOS), or Windows Firewall rules. Allow `www.googleapis.com` and `oauth2.googleapis.com` on port 443.
+**What the sandbox can't do.** It is a safety net for bugs and for hostile data coming from Drive (for example malicious file names). It is **not** protection against a malicious build of drivesync itself: code that is already malicious runs before the sandbox starts, and on macOS and Windows it also controls the unsandboxed launcher. Only install builds you trust, and check the signatures.
+
+It also limits *ports*, not *hosts*. Code running inside the sandbox could still send your Drive data to some other HTTPS server. To pin drivesync to Google's servers only, add an application firewall such as [OpenSnitch](https://github.com/evilsocket/opensnitch) (Linux), Little Snitch or LuLu (macOS), or Windows Firewall rules. Allow `www.googleapis.com` and `oauth2.googleapis.com` on port 443.
 
 ## Install
 
@@ -96,9 +102,9 @@ scripts/dev.sh build        # builds ./drivesync in a container; DRIVESYNC_RUN=d
 
 ### Requirements
 
-- **Linux:** x86-64, kernel 6.7 or newer with Landlock (the default on Fedora, Arch, Ubuntu 24.04+ and Debian 13+), `secret-tool` (package `libsecret` or `libsecret-tools`, already inside the Flatpak) and KWallet or GNOME Keyring.
-- **macOS:** 13 or newer, on Apple silicon or Intel.
-- **Windows:** 10 or 11, x86-64.
+- **Linux:** x86-64, kernel 6.7 or newer with Landlock enabled (most current distributions enable it; drivesync tells you if yours doesn't), `secret-tool` (package `libsecret` or `libsecret-tools`, already inside the Flatpak) and KWallet or GNOME Keyring. Tested on Fedora and in CI on Ubuntu 24.04.
+- **macOS:** tested only on macOS 15 (Apple silicon) in CI. Intel builds are produced but untested.
+- **Windows:** x86-64. Tested only on Windows Server 2025 in CI.
 
 ## Set up your own Google OAuth client (one time, about 5 minutes)
 
@@ -195,13 +201,13 @@ scripts/dev.sh sandbox   # sandbox tests; fails if the kernel can't enforce it
 scripts/dev.sh shell     # shell inside the dev container
 ```
 
-The Go version is pinned in `.tool-versions` (asdf works with it directly) and the dev image digest in `.golang-image-digest`. CI runs the same checks on Linux, plus native tests and a live sandbox self-test (`drivesync selftest-sandbox`) on macOS and Windows. It uses only GitHub's own actions, pinned by commit.
+The Go version is pinned in `.tool-versions` (asdf works with it directly) and the dev image digest in `.golang-image-digest`. CI runs the same checks on Linux, plus native tests and the sandbox self-test on macOS and Windows. Workflow steps use GitHub's own actions pinned by commit. The Flatpak is built in Flathub's `flatpak-github-actions` container image.
 
 The test suite runs drivesync against an in-memory fake of the Drive API, which keeps revision history the way real Drive does. It covers:
 
 - every sync rule above
-- a **randomized test** that runs thousands of mixed local and remote edits, deletes, renames, restarts and failures, and checks after every pass that no version of any file was lost and that both sides end up identical
-- **escape tests** that start a sandboxed process and confirm it can't read files outside its folders, run programs, open other ports or sockets, signal or debug other processes, or create namespaces
+- a **randomized test** (60 seeds of 30 rounds each) that mixes local and remote edits, deletes and folder removals with engine restarts. After every pass it checks that no version of any file was lost, counting Drive revisions and both trashes as kept. At the end it checks that both sides are identical. Network failures and mid-transfer interruptions are covered by separate, targeted tests, not by the randomized one.
+- **escape tests (Linux)** that start a sandboxed process and confirm it can't read files outside its folders, run programs, open other ports or sockets, signal or debug other processes, or create namespaces
 - a full sync run **inside** the sandbox, to prove the restrictions don't break the sync
 
 ## License

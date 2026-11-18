@@ -1,0 +1,20 @@
+app-id: io.github.celso_alexandre.drivesync
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+command: drivesync
+finish-args:
+  - --share=network
+  - --filesystem=~/GoogleDrive:create
+  - --talk-name=org.freedesktop.secrets
+modules:
+  - name: drivesync
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 drivesync /app/bin/drivesync
+      - install -Dm644 io.github.celso_alexandre.drivesync.metainfo.xml /app/share/metainfo/io.github.celso_alexandre.drivesync.metainfo.xml
+    sources:
+      - type: file
+        path: ../dist/drivesync
+      - type: file
+        path: io.github.celso_alexandre.drivesync.metainfo.xml

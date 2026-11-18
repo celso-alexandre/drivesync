@@ -1,6 +1,6 @@
 # drivesync
 
-**Two-way sync of the Google Drive folders you choose, for Linux. Small, sandboxed, and with no dependencies.**
+**Two-way sync of the Google Drive folders you choose, for Linux, macOS and Windows. Small, sandboxed, and with no dependencies.**
 
 > [!WARNING]
 > **Very early software. Use at your own risk.**
@@ -9,19 +9,19 @@
 
 > [!NOTE]
 > drivesync is an **unofficial**, independent project. It is not made, endorsed or supported by Google.
-> Google Drive is a trademark of Google LLC. drivesync talks to Drive only through the public, documented [Google Drive API](https://developers.google.com/workspace/drive/api).
+> Google Drive is a trademark of Google LLC. drivesync talks to Drive only through the public, documented [Google Drive API](https://developers.google.com/workspace/drive/api), using an OAuth client that **you** create and own.
 
 ---
 
 ## Why
 
-Google's own desktop client exists only for Windows and macOS. drivesync brings the part most people need to Linux: pick some Drive folders, get a real local copy, and keep both sides in sync.
+Google's own desktop client exists only for Windows and macOS, and it wants the whole machine. drivesync is the small, auditable alternative: pick some Drive folders, get a real local copy, and keep both sides in sync.
 
 - **Selective sync:** mirror only the top-level folders you pick, not your whole Drive.
 - **Real files on disk:** they work offline, with any app, and are indexed by your desktop search.
 - **Two-way:** edits, new files, renames and deletions flow in both directions.
 - **Careful with your data:** nothing is ever deleted outright, and conflicts keep both versions.
-- **Sandboxed by the kernel:** even a bug or a compromised build can't reach the rest of your system.
+- **Sandboxed:** even a bug or a compromised build can't reach the rest of your system.
 - **One static binary:** written in Go using only the standard library.
 
 ## How it keeps your data safe
@@ -32,11 +32,12 @@ Google's own desktop client exists only for Windows and macOS. drivesync brings 
 | Someone edits it in Drive | Downloads the new version. Your local copy is replaced only if you hadn't changed it. |
 | Both sides changed | Keeps Drive's version in place and saves yours next to it as `name (conflict 2026-11-18 150405).ext`, which then syncs too. |
 | You delete a file locally | Moves it to the **Drive trash**, where it can be restored for 30 days. |
-| It is deleted in Drive | Moves your local copy to `~/GoogleDrive/.drivesync-trash/<date>/`. Nothing is erased. |
+| It is deleted in Drive | Moves your local copy to `GoogleDrive/.drivesync-trash/<date>/`. Nothing is erased. |
 | More than half of a folder would be deleted in one pass | **Refuses** and logs a warning. Run `drivesync sync --allow-delete` if you really meant it. |
 | A synced folder goes missing locally (unmounted disk, typo) | Stops syncing that folder. It **never** treats a missing folder as "delete everything". |
 | You edit a file while it is being synced | Detects the change, leaves your file alone, and retries on the next pass. |
 | Network or API errors | The pass stops early without changing anything else, and the next pass picks up where it left off. |
+| A Drive name your system can't store (`CON`, `a:b`, or `A.txt` next to `a.txt` on macOS/Windows) | Skips it with a warning and never overwrites one with the other. |
 
 Downloads go to a temporary file first and are renamed into place only when complete, so a crash never leaves a half-written file behind.
 
@@ -44,47 +45,69 @@ Downloads go to a temporary file first and are renamed into place only when comp
 
 drivesync holds a token that can read and write your Drive, so it's designed to need as little trust as possible.
 
-**No third-party code.** drivesync uses only the Go standard library. There is no `go.sum` and no dependency tree that could be compromised, and a test fails the build if one is ever added.
+**No third-party code.** drivesync uses only the Go standard library. There is no `go.sum` and no dependency tree that could be compromised, and a test fails the build if one is ever added. Even the development and CI environments run without network access.
 
-**Sandboxed by the kernel.** As soon as it has read its sign-in from your keyring, drivesync locks itself down with [Landlock](https://docs.kernel.org/userspace-api/landlock.html) and a seccomp filter. From that point on, even code running inside drivesync:
+**Your keys, your keychain.** You sign in with your own Google Cloud OAuth client, so no third party ever holds a key to your Drive. The sign-in is kept in the system's own secret store: KWallet or GNOME Keyring on Linux (through Secret Service), the Keychain on macOS, and Credential Manager on Windows. It never touches a plain file.
 
-- can read and write **only** your sync folder and its own state, can read its own config, and can read `/etc` and `/usr`. Your SSH keys, browser profiles, documents and the rest of your home folder are off limits.
-- can open **only** outgoing TCP connections to ports 443 (HTTPS) and 53 (DNS). It can't listen for connections or use local sockets such as D-Bus or X11.
-- can't **run programs**, debug or signal other processes, create namespaces, load kernel modules or BPF programs, or use io_uring.
-- can't undo or loosen any of this, because the restrictions are permanent for the life of the process.
+**Sandboxed.** The part of drivesync that talks to Drive and touches your files runs locked down by the operating system:
 
-If the kernel can't enforce the sandbox, drivesync **refuses to start**. You can override that with `--unsafe-no-sandbox`, but it prints a warning every time.
+| | Linux | macOS | Windows |
+| --- | --- | --- | --- |
+| Mechanism | [Landlock](https://docs.kernel.org/userspace-api/landlock.html) + seccomp, in-process | `sandbox-exec` profile on a worker process | AppContainer worker in a job object |
+| Files | Only the sync folder, its state and its config | Only the sync folder, its state and its config | Only the sync folder, its state and its config |
+| Network | Outgoing TCP to ports 443 and 53 only | Outgoing TCP to ports 443 and 53 only | Outgoing internet only (any port) |
+| Starting other programs | Blocked | Blocked | Blocked |
+| Other processes | Can't debug or signal them | Can't debug them | Can't debug them |
+| Kernel attack surface | Blocks namespaces, BPF, io_uring, keyrings and module loading | Default macOS sandbox rules | Default AppContainer rules |
 
-**Credentials stay in your keyring.** The sign-in is saved through the Secret Service API (KWallet, GNOME Keyring), never in a plain file. drivesync ships with no OAuth credentials of its own: you use your own Google Cloud OAuth client, so no third party ever holds a key to your Drive.
+The restrictions can't be lifted from the inside. If the sandbox can't be set up, drivesync **refuses to start**. On macOS and Windows the worker also checks itself before syncing anything: if it can still read your home folder or start a program, it stops. `--unsafe-no-sandbox` turns all of this off and prints a warning every time.
 
-**What the sandbox can't do.** Landlock limits *ports*, not *hosts*. A compromised build could still send your Drive data to some other HTTPS server. To pin drivesync to Google's servers only, add an application firewall such as [OpenSnitch](https://github.com/evilsocket/opensnitch) and allow `www.googleapis.com` and `oauth2.googleapis.com` on port 443.
+On macOS and Windows, a small launcher reads your sign-in from the system keychain and hands it to the sandboxed worker. `login`, `logout`, `select` and `status` run in that launcher without the sandbox. They are short, local or single-request commands, and on Linux they are sandboxed too.
 
-## Requirements
+On Windows, drivesync grants its AppContainer access to the sync, state and config folders by adding an entry to each folder's permissions.
 
-- Linux on x86-64, **kernel 6.7 or newer** with Landlock enabled (the default on Fedora, Arch, Ubuntu 24.04+ and Debian 13+)
-- `secret-tool` (package `libsecret` or `libsecret-tools`) plus a running keyring: KWallet or GNOME Keyring
-- A Google account
+**What the sandbox can't do.** It limits *ports*, not *hosts*. A compromised build could still send your Drive data to some other HTTPS server. To pin drivesync to Google's servers only, add an application firewall such as [OpenSnitch](https://github.com/evilsocket/opensnitch) (Linux), Little Snitch or LuLu (macOS), or Windows Firewall rules. Allow `www.googleapis.com` and `oauth2.googleapis.com` on port 443.
 
 ## Install
+
+### Linux: Flatpak (recommended, updates automatically)
+
+```sh
+flatpak remote-add --user --if-not-exists drivesync https://celso-alexandre.github.io/drivesync/drivesync.flatpakrepo
+flatpak install --user drivesync io.github.celso_alexandre.drivesync
+alias drivesync='flatpak run io.github.celso_alexandre.drivesync'
+```
+
+The Flatpak can only see `~/GoogleDrive`. If you change the sync folder, grant access with `flatpak override --user --filesystem=/new/path io.github.celso_alexandre.drivesync`.
+
+### Linux, macOS, Windows: release archives
+
+Download the archive for your system from [Releases](https://github.com/celso-alexandre/drivesync/releases). Check it against `SHA256SUMS`, whose signature can be verified with the key in [`flatpak/drivesync.asc`](flatpak/drivesync.asc). Then put `drivesync` (or `drivesync.exe`) somewhere on your `PATH`.
+
+macOS marks downloaded files as quarantined. If you downloaded it with a browser, run `xattr -d com.apple.quarantine drivesync` once.
+
+### From source
 
 ```sh
 git clone https://github.com/celso-alexandre/drivesync
 cd drivesync
-scripts/dev.sh build
-install -Dm755 drivesync ~/.local/bin/drivesync
+scripts/dev.sh build        # builds ./drivesync in a container; DRIVESYNC_RUN=direct builds with your local Go
 ```
 
-`scripts/dev.sh build` compiles inside a throwaway container (see [Development](#development)). With Go installed locally, `DRIVESYNC_RUN=direct scripts/dev.sh build` builds on the host instead.
+### Requirements
+
+- **Linux:** x86-64, kernel 6.7 or newer with Landlock (the default on Fedora, Arch, Ubuntu 24.04+ and Debian 13+), `secret-tool` (package `libsecret` or `libsecret-tools`, already inside the Flatpak) and KWallet or GNOME Keyring.
+- **macOS:** 13 or newer, on Apple silicon or Intel.
+- **Windows:** 10 or 11, x86-64.
 
 ## Set up your own Google OAuth client (one time, about 5 minutes)
 
-Google requires every app that uses the Drive API to have an OAuth client. Creating your own is free, and it means drivesync never depends on anyone else's keys.
+Google requires every app that uses the Drive API to have an OAuth client. Creating your own is free, and it means drivesync never depends on anyone else's keys. `drivesync login` shows these steps too.
 
-1. Open the [Google Cloud console](https://console.cloud.google.com/) and **create a project**, for example "drivesync".
-2. Go to **APIs & Services → Library**, search for **Google Drive API** and click **Enable**.
-3. Go to **Google Auth Platform → Branding**, enter an app name and your email, and save. Under **Audience**, choose **External**.
-4. Still under **Audience**, click **Publish app**. Without this, Google expires your sign-in every 7 days. Since this app is only for you, Google doesn't review it. You'll just see an "unverified app" notice when you sign in.
-5. Go to **Google Auth Platform → Clients → Create client**. Choose application type **Desktop app**, then copy the **Client ID** and **Client secret**.
+1. Open the [Google Cloud console](https://console.cloud.google.com/projectcreate) and **create a project**, for example "drivesync".
+2. **Enable** the [Google Drive API](https://console.cloud.google.com/apis/library/drive.googleapis.com) in it.
+3. Under [Google Auth Platform → Branding](https://console.cloud.google.com/auth/branding), enter an app name and your email. Under **Audience**, choose **External**, then click **Publish app**. Without this, Google expires your sign-in every 7 days. Since the app is only for you, Google doesn't review it. You'll just see an "unverified app" notice when you sign in.
+4. Under [Clients](https://console.cloud.google.com/auth/clients/create), create a client of type **Desktop app**, then copy its **Client ID** and **Client secret**.
 
 ## Use
 
@@ -99,31 +122,47 @@ Your folders appear in `~/GoogleDrive/Documents` and `~/GoogleDrive/Photos`.
 
 ### Keep it running while you're logged in
 
+**Linux (systemd):**
+
 ```sh
 install -Dm644 contrib/drivesync.service ~/.config/systemd/user/drivesync.service
 systemctl --user daemon-reload
 systemctl --user enable --now drivesync
-journalctl --user -u drivesync -f      # watch it work
+journalctl --user -u drivesync -f
 ```
 
-The service starts with your desktop session and stops when you log out.
+The service starts with your desktop session and stops when you log out. For the Flatpak, change `ExecStart` to `/usr/bin/flatpak run io.github.celso_alexandre.drivesync run`.
+
+**macOS (launchd):** set your user name in the log path, then load it:
+
+```sh
+sed "s|/Users/YOU|$HOME|" contrib/io.github.celso_alexandre.drivesync.plist > ~/Library/LaunchAgents/io.github.celso_alexandre.drivesync.plist
+launchctl load ~/Library/LaunchAgents/io.github.celso_alexandre.drivesync.plist
+```
+
+**Windows (Task Scheduler):** this runs it hidden at every sign-in:
+
+```powershell
+schtasks /Create /SC ONLOGON /TN drivesync /TR "conhost.exe --headless C:\path\to\drivesync.exe run"
+```
 
 ### Commands
 
 | Command | |
 | --- | --- |
 | `drivesync login` | Sign in with your own OAuth client |
-| `drivesync logout` | Remove the saved sign-in from the keyring |
+| `drivesync logout` | Remove the saved sign-in from the keychain |
 | `drivesync folders` | List top-level folders in My Drive. Selected ones are marked `*` |
 | `drivesync select NAME...` | Start mirroring these folders |
 | `drivesync unselect NAME...` | Stop mirroring them. Local copies are kept |
 | `drivesync status` | Show settings and how many items are synced |
 | `drivesync sync` | Run one sync pass |
 | `drivesync run` | Keep syncing, polling every 30 seconds |
+| `drivesync version` | Print the version |
 
 ### Settings
 
-`~/.config/drivesync/config.json`:
+`config.json` in drivesync's config folder: `~/.config/drivesync` on Linux, `~/Library/Application Support/drivesync` on macOS, `%AppData%\drivesync` on Windows.
 
 ```json
 {
@@ -133,7 +172,7 @@ The service starts with your desktop session and stops when you log out.
 }
 ```
 
-Changes to `folders` take effect on the next pass. If you change `root`, the running service exits and restarts so the sandbox can be rebuilt around the new folder.
+Changes to `folders` take effect on the next pass. If you change `root`, the running sync exits and restarts so the sandbox can be rebuilt around the new folder.
 
 ## Current limitations
 
@@ -142,7 +181,8 @@ Changes to `folders` take effect on the next pass. If you change `root`, the run
 - Changes are checked every 30 seconds rather than instantly.
 - Symbolic links and special files are ignored.
 - If an upload is interrupted, it starts over from the beginning on the next pass.
-- Only Linux on x86-64 is supported for now.
+- On Windows, an edit that keeps both the file size and the modification time unchanged isn't noticed. Linux and macOS catch it through the inode change time.
+- The Linux sandbox is implemented for x86-64 only.
 
 ## Development
 
@@ -155,9 +195,9 @@ scripts/dev.sh sandbox   # sandbox tests; fails if the kernel can't enforce it
 scripts/dev.sh shell     # shell inside the dev container
 ```
 
-The Go version and image digest are pinned in `.tool-versions`.
+The Go version and image digest are pinned in `.tool-versions`. CI runs the same checks on Linux, plus native tests and a live sandbox self-test (`drivesync selftest-sandbox`) on macOS and Windows. It uses only GitHub's own actions, pinned by commit.
 
-The test suite runs drivesync against an in-memory fake of the Drive API. It covers:
+The test suite runs drivesync against an in-memory fake of the Drive API, which keeps revision history the way real Drive does. It covers:
 
 - every sync rule above
 - a **randomized test** that runs thousands of mixed local and remote edits, deletes, renames, restarts and failures, and checks after every pass that no version of any file was lost and that both sides end up identical

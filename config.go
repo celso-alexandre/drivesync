@@ -26,17 +26,6 @@ func configPath() (string, error) {
 	return filepath.Join(dir, "drivesync", "config.json"), nil
 }
 
-func stateDir() (string, error) {
-	if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
-		return filepath.Join(dir, "drivesync"), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".local", "state", "drivesync"), nil
-}
-
 func loadConfig() (*Config, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -135,7 +124,11 @@ func listFolders(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := enterSandbox(sandboxPolicy{Read: systemReadPaths(), ConnectPorts: internetPorts}); err != nil {
+	policy, err := foldersPolicy()
+	if err != nil {
+		return err
+	}
+	if err := enterSandbox(policy); err != nil {
 		return err
 	}
 	folders, err := drive.ListFolders(ctx, "root")

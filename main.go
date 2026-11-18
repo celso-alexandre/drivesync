@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 )
+
+var version = "dev"
 
 const usage = `drivesync - two-way mirror of selected Google Drive folders
 
@@ -23,6 +26,7 @@ Commands:
   drivesync status                show settings and synced item counts
   drivesync sync [--allow-delete] run one sync pass
   drivesync run [--allow-delete]  keep syncing until stopped
+  drivesync version               print the version
 `
 
 func main() {
@@ -38,6 +42,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := runCommand(ctx, args[0], args[1:]); err != nil {
+		var code exitCodeError
+		if errors.As(err, &code) {
+			os.Exit(int(code))
+		}
 		fmt.Fprintln(os.Stderr, "drivesync:", err)
 		os.Exit(1)
 	}
@@ -50,6 +58,9 @@ func runCommand(ctx context.Context, name string, args []string) error {
 	case "logout":
 		return logout()
 	case "folders":
+		if launched, err := maybeLaunch(ctx, []string{"folders"}, foldersPolicy); launched {
+			return err
+		}
 		return listFolders(ctx)
 	case "select":
 		return changeSelection(args, true)
@@ -63,7 +74,15 @@ func runCommand(ctx context.Context, name string, args []string) error {
 		if err := flags.Parse(args); err != nil {
 			return err
 		}
+		if launched, err := maybeLaunch(ctx, append([]string{name}, args...), syncPolicy); launched {
+			return err
+		}
 		return startSync(ctx, name == "run", *allowDelete)
+	case "version", "--version":
+		fmt.Println("drivesync", version)
+		return nil
+	case "selftest-sandbox":
+		return selftestSandbox(ctx, args)
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return nil

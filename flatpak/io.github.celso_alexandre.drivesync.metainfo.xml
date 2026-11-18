@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="console-application">
+  <id>io.github.celso_alexandre.drivesync</id>
+  <name>drivesync</name>
+  <summary>Unofficial two-way sync of selected Google Drive folders</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <developer id="io.github.celso_alexandre">
+    <name>Celso Alexandre</name>
+  </developer>
+  <description>
+    <p>
+      drivesync mirrors the Google Drive folders you choose into a local folder and keeps both sides in sync.
+      It is an independent project, not affiliated with or endorsed by Google, and it is very early software: keep a backup.
+    </p>
+    <p>
+      It never deletes outright (deleted files go to the Drive trash or a local trash folder), keeps both versions on conflicts,
+      and runs inside a kernel sandbox that limits it to its own folders and outgoing HTTPS.
+    </p>
+  </description>
+  <url type="homepage">https://github.com/celso-alexandre/drivesync</url>
+  <url type="bugtracker">https://github.com/celso-alexandre/drivesync/issues</url>
+  <provides>
+    <binary>drivesync</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+</component>

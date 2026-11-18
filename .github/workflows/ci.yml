@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Format, vet, tests and sandbox tests in the dev container
+        run: scripts/dev.sh check
+      - name: Sandbox self-test on the runner kernel
+        run: ./drivesync selftest-sandbox
+
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: .tool-versions
+          cache: false
+      - name: Vet
+        run: go vet ./...
+      - name: Tests with the race detector
+        run: go test -race -count=1 ./...
+      - name: Build
+        run: CGO_ENABLED=0 go build -trimpath -o dist/ .
+      - name: Sandbox self-test
+        run: dist/drivesync selftest-sandbox

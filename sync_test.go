@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -158,6 +159,9 @@ func TestMetadataOnlyLocalChangeIsNotUploaded(t *testing.T) {
 }
 
 func TestSameSizeSameMtimeEditIsDetected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows exposes no inode change time; edits that restore size and mtime are not detected there")
+	}
 	h := newHarness(t)
 	work := h.drive.add("Work", "root-id", nil, true)
 	file := h.drive.add("a.txt", work, []byte("aaaa"), false)
@@ -508,5 +512,64 @@ func TestStateFileIsPrivate(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("state file mode %v", info.Mode().Perm())
+	}
+}
+
+func withCaseInsensitiveNames(t *testing.T) {
+	old := caseInsensitiveNames
+	caseInsensitiveNames = true
+	t.Cleanup(func() { caseInsensitiveNames = old })
+}
+
+func TestCaseOnlyRemoteRenameOnCaseInsensitiveSystems(t *testing.T) {
+	withCaseInsensitiveNames(t)
+	h := newHarness(t)
+	work := h.drive.add("Work", "root-id", nil, true)
+	file := h.drive.add("Report.txt", work, []byte("content"), false)
+	h.run()
+	h.drive.move(file, work, "report.txt")
+	h.run()
+	h.run()
+	if !h.drive.live(file) {
+		t.Fatal("case-only rename deleted the file in Drive")
+	}
+	if h.read("Work/report.txt") != "content" || h.exists("Work/Report.txt") {
+		t.Fatal("case-only rename was not applied locally")
+	}
+	files, _ := h.drive.tree(work)
+	if len(files) != 1 {
+		t.Fatalf("case-only rename duplicated files in Drive: %v", files)
+	}
+}
+
+func TestCaseDuplicatesOnCaseInsensitiveSystems(t *testing.T) {
+	withCaseInsensitiveNames(t)
+	h := newHarness(t)
+	work := h.drive.add("Work", "root-id", nil, true)
+	upper := h.drive.add("A.txt", work, []byte("upper"), false)
+	lower := h.drive.add("a.txt", work, []byte("lower"), false)
+	h.run()
+	h.run()
+	if !h.drive.live(upper) || !h.drive.live(lower) {
+		t.Fatal("case duplicates caused a deletion in Drive")
+	}
+	if string(h.drive.files[upper].content) != "upper" || string(h.drive.files[lower].content) != "lower" {
+		t.Fatal("case duplicates caused an overwrite in Drive")
+	}
+}
+
+func TestWindowsNamesAreFiltered(t *testing.T) {
+	old := targetOS
+	targetOS = "windows"
+	t.Cleanup(func() { targetOS = old })
+	for _, name := range []string{"CON", "con.txt", "a:b", `a\b`, "trailing.", "trailing ", "a?b", "LPT1.log", "tab\tname"} {
+		if validName(name) {
+			t.Errorf("%q accepted on Windows", name)
+		}
+	}
+	for _, name := range []string{"report.txt", "ação.txt", "CONSOLE.txt", ".hidden", "a b"} {
+		if !validName(name) {
+			t.Errorf("%q rejected on Windows", name)
+		}
 	}
 }

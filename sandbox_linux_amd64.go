@@ -18,6 +18,12 @@ const (
 	sysClone                 = 56
 	sysClone3                = 435
 	sysSocket                = 41
+	sysKill                  = 62
+	sysTkill                 = 200
+	sysTgkill                = 234
+	sysRtSigqueueinfo        = 129
+	sysRtTgsigqueueinfo      = 297
+	sysPidfdSendSignal       = 424
 
 	oPath = 0x200000
 
@@ -165,7 +171,7 @@ func applySandbox(policy sandboxPolicy) error {
 		}
 		return fmt.Errorf("setting no_new_privs: %v", errno)
 	}
-	if err := installSeccomp(); err != nil {
+	if err := installSeccomp(policy.AllowSignals); err != nil {
 		return err
 	}
 	if _, _, errno := syscall.AllThreadsSyscall(sysLandlockRestrictSelf, ruleset, 0, 0); errno != 0 {
@@ -207,7 +213,7 @@ func jump(code uint16, k uint32, jt, jf uint8) sockFilter {
 	return sockFilter{code: code, jt: jt, jf: jf, k: k}
 }
 
-func seccompProgram() []sockFilter {
+func seccompProgram(allowSignals bool, pid uint32) []sockFilter {
 	program := []sockFilter{
 		statement(bpfLoadWord, seccompDataArch),
 		jump(bpfJumpEq, auditArchX8664, 1, 0),
@@ -226,6 +232,23 @@ func seccompProgram() []sockFilter {
 			statement(bpfReturn, seccompRetErrno|uint32(errno)),
 		)
 	}
+	if !allowSignals {
+		program = append(program,
+			jump(bpfJumpEq, sysTkill, 0, 1),
+			statement(bpfReturn, seccompRetErrno|uint32(syscall.EPERM)),
+			jump(bpfJumpEq, sysPidfdSendSignal, 0, 1),
+			statement(bpfReturn, seccompRetErrno|uint32(syscall.EPERM)),
+		)
+		for _, nr := range []uint32{sysKill, sysTgkill, sysRtSigqueueinfo, sysRtTgsigqueueinfo} {
+			program = append(program,
+				jump(bpfJumpEq, nr, 0, 4),
+				statement(bpfLoadWord, seccompDataArgZero),
+				jump(bpfJumpEq, pid, 0, 1),
+				statement(bpfReturn, seccompRetAllow),
+				statement(bpfReturn, seccompRetErrno|uint32(syscall.EPERM)),
+			)
+		}
+	}
 	program = append(program,
 		jump(bpfJumpEq, sysClone, 0, 4),
 		statement(bpfLoadWord, seccompDataArgZero),
@@ -242,8 +265,8 @@ func seccompProgram() []sockFilter {
 	return program
 }
 
-func installSeccomp() error {
-	program := seccompProgram()
+func installSeccomp(allowSignals bool) error {
+	program := seccompProgram(allowSignals, uint32(syscall.Getpid()))
 	prog := sockFprog{length: uint16(len(program)), filter: &program[0]}
 	if _, _, errno := syscall.Syscall(sysSeccomp, seccompSetModeFilter, seccompFlagTsync, uintptr(unsafe.Pointer(&prog))); errno != 0 {
 		return fmt.Errorf("installing seccomp filter: %v", errno)

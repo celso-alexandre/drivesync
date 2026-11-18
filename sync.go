@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -49,9 +48,7 @@ type localItem struct {
 
 func toLocalItem(info fs.FileInfo) localItem {
 	item := localItem{Dir: info.IsDir(), Size: info.Size(), Modified: info.ModTime()}
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-		item.Changed = time.Unix(stat.Ctim.Sec, stat.Ctim.Nsec)
-	}
+	item.Changed = changeTime(info)
 	return item
 }
 
@@ -84,6 +81,7 @@ type syncer struct {
 	sandboxRoot string
 	remoteFiles []File
 	remote      map[string]*File
+	remoteFold  map[string]string
 	local       map[string]localItem
 	children    map[string][]*File
 	folderIDs   map[string]string
@@ -115,21 +113,19 @@ func loadState() (*State, string, error) {
 }
 
 func startSync(ctx context.Context, loop, allowDelete bool) error {
+	policy, err := syncPolicy()
+	if err != nil {
+		return err
+	}
 	dir, err := stateDir()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	lock, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	lock, err := lockFile(filepath.Join(dir, "lock"))
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return errors.New("another drivesync sync is already running")
-	}
 
 	drive, err := newDrive()
 	if err != nil {
@@ -142,20 +138,6 @@ func startSync(ctx context.Context, loop, allowDelete bool) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
-	}
-	cfgPath, err := configPath()
-	if err != nil {
-		return err
-	}
-	for _, path := range []string{cfg.Root, filepath.Dir(cfgPath)} {
-		if err := os.MkdirAll(path, 0o700); err != nil {
-			return err
-		}
-	}
-	policy := sandboxPolicy{
-		ReadWrite:    []string{cfg.Root, dir},
-		Read:         append(systemReadPaths(), filepath.Dir(cfgPath)),
-		ConnectPorts: internetPorts,
 	}
 	if err := enterSandbox(policy); err != nil {
 		return err
@@ -295,6 +277,7 @@ func (s *syncer) buildRemote() {
 		})
 	}
 	s.remote = map[string]*File{}
+	s.remoteFold = map[string]string{}
 	s.folderIDs = map[string]string{}
 	var walk func(id, prefix string)
 	walk = func(id, prefix string) {
@@ -307,11 +290,12 @@ func (s *syncer) buildRemote() {
 				continue
 			}
 			p := prefix + "/" + file.Name
-			if _, duplicate := s.remote[p]; duplicate {
+			if _, duplicate := s.remoteFold[foldKey(p)]; duplicate {
 				s.warnOnce("skipped duplicate name in Drive: " + p)
 				continue
 			}
 			s.remote[p] = file
+			s.remoteFold[foldKey(p)] = p
 			if file.IsFolder() {
 				s.folderIDs[p] = file.ID
 				walk(file.ID, p)
@@ -328,14 +312,11 @@ func (s *syncer) buildRemote() {
 				continue
 			}
 			s.remote[name] = file
+			s.remoteFold[foldKey(name)] = name
 			s.folderIDs[name] = file.ID
 			walk(file.ID, name)
 		}
 	}
-}
-
-func validName(name string) bool {
-	return name != "" && name != "." && name != ".." && !strings.Contains(name, "/") && !strings.HasPrefix(name, tempPrefix)
 }
 
 func topLevel(p string) string {
@@ -419,6 +400,11 @@ func (s *syncer) syncFolder(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("scanning local files: %w", err)
 	}
+	if caseInsensitiveNames {
+		if local, err = s.matchRemoteCase(name, local); err != nil {
+			return err
+		}
+	}
 	s.local = local
 
 	paths := map[string]bool{}
@@ -488,6 +474,46 @@ func (s *syncer) syncFolder(ctx context.Context, name string) error {
 	return s.syncFolders(ctx, folders, blockDeletes)
 }
 
+func (s *syncer) matchRemoteCase(name string, local map[string]localItem) (map[string]localItem, error) {
+	for range 1000 {
+		paths := make([]string, 0, len(local))
+		for p := range local {
+			paths = append(paths, p)
+		}
+		slices.Sort(paths)
+		renamed := false
+		for _, p := range paths {
+			if _, exact := s.remote[p]; exact {
+				continue
+			}
+			target, ok := s.remoteFold[foldKey(p)]
+			if !ok || target == p || path.Dir(target) != path.Dir(p) {
+				continue
+			}
+			if err := os.Rename(s.localPath(p), s.localPath(target)); err != nil {
+				return nil, fmt.Errorf("matching the case of %s: %w", target, err)
+			}
+			for old, entry := range s.state.Entries {
+				if old == p || strings.HasPrefix(old, p+"/") {
+					delete(s.state.Entries, old)
+					s.state.Entries[target+strings.TrimPrefix(old, p)] = entry
+				}
+			}
+			log.Printf("%s: renamed to %s to match Drive", p, path.Base(target))
+			renamed = true
+			break
+		}
+		if !renamed {
+			return local, nil
+		}
+		var err error
+		if local, err = s.scanLocal(name); err != nil {
+			return nil, err
+		}
+	}
+	return nil, errors.New("too many case-only renames")
+}
+
 func (s *syncer) decide(p string, remote *File, item localItem, hasLocal bool, entry *Entry) (action, error) {
 	if entry != nil {
 		remoteChanged := remote == nil || remote.ID != entry.ID || remote.MD5 != entry.MD5
@@ -512,6 +538,9 @@ func (s *syncer) decide(p string, remote *File, item localItem, hasLocal bool, e
 		case remote == nil && hasLocal:
 			if localChanged {
 				return actionUpload, nil
+			}
+			if other, ok := s.remoteFold[foldKey(p)]; ok && other != p {
+				return actionForget, nil
 			}
 			return actionTrashLocal, nil
 		case remote != nil && !hasLocal:

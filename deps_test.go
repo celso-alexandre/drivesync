@@ -42,21 +42,3 @@ func TestNoThirdPartyDependencies(t *testing.T) {
 		}
 	}
 }
-
-func TestSeccompProgramIsWellFormed(t *testing.T) {
-	program := seccompProgram()
-	if len(program) == 0 || len(program) > 4096 {
-		t.Fatalf("program length %d", len(program))
-	}
-	for i, instruction := range program {
-		if instruction.code&0x07 == 0x05 {
-			if i+1+int(instruction.jt) >= len(program) || i+1+int(instruction.jf) >= len(program) {
-				t.Fatalf("instruction %d jumps out of the program", i)
-			}
-		}
-	}
-	last := program[len(program)-1]
-	if last.code != bpfReturn {
-		t.Fatal("program does not end with a return")
-	}
-}

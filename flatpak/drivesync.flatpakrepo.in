@@ -1,0 +1,6 @@
+[Flatpak Repo]
+Title=drivesync (unofficial Google Drive sync)
+Url=https://celso-alexandre.github.io/drivesync/repo/
+Homepage=https://github.com/celso-alexandre/drivesync
+Comment=Two-way sync of selected Google Drive folders
+GPGKey=@GPGKEY@

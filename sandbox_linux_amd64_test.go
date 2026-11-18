@@ -165,6 +165,9 @@ func sandboxEscapeScenario(t *testing.T) {
 	expectDenied(t, "open a packet socket", err)
 
 	expectDenied(t, "signal the parent", syscall.Kill(os.Getppid(), syscall.Signal(0)))
+	expectDenied(t, "tgkill the parent", syscall.Tgkill(os.Getppid(), os.Getppid(), syscall.Signal(0)))
+	expectDenied(t, "signal the process group", syscall.Kill(0, syscall.Signal(0)))
+	expectAllowed(t, "signal itself", syscall.Kill(os.Getpid(), syscall.Signal(0)))
 	expectDenied(t, "ptrace the parent", syscall.PtraceAttach(os.Getppid()))
 	expectDenied(t, "unshare a user namespace", syscall.Unshare(syscall.CLONE_NEWUSER))
 	expectDenied(t, "unshare a mount namespace", syscall.Unshare(syscall.CLONE_NEWNS))
@@ -212,4 +215,22 @@ func sandboxSyncScenario(t *testing.T) {
 	twoWayScenario(t, h)
 	_, err = os.ReadFile(filepath.Join(home, "outside.txt"))
 	expectDenied(t, "read next to the sync folder", err)
+}
+
+func TestSeccompProgramIsWellFormed(t *testing.T) {
+	program := seccompProgram(false, 1234)
+	if len(program) == 0 || len(program) > 4096 {
+		t.Fatalf("program length %d", len(program))
+	}
+	for i, instruction := range program {
+		if instruction.code&0x07 == 0x05 {
+			if i+1+int(instruction.jt) >= len(program) || i+1+int(instruction.jf) >= len(program) {
+				t.Fatalf("instruction %d jumps out of the program", i)
+			}
+		}
+	}
+	last := program[len(program)-1]
+	if last.code != bpfReturn {
+		t.Fatal("program does not end with a return")
+	}
 }

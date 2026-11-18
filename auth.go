@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +48,15 @@ type callback struct {
 }
 
 func login(ctx context.Context) error {
+	fmt.Print(`drivesync signs in with your own Google OAuth client, so no third party holds a key to your Drive.
+If you don't have one yet (about 5 minutes, free):
+
+  1. https://console.cloud.google.com/projectcreate         create a project
+  2. https://console.cloud.google.com/apis/library/drive.googleapis.com   enable the Google Drive API
+  3. https://console.cloud.google.com/auth/branding         set an app name, Audience: External, then Publish app
+  4. https://console.cloud.google.com/auth/clients/create   type "Desktop app", copy the ID and secret
+
+`)
 	input := bufio.NewReader(os.Stdin)
 	clientID, err := prompt(input, "OAuth client ID: ")
 	if err != nil {
@@ -86,7 +94,7 @@ func login(ctx context.Context) error {
 	if os.Getenv("SSH_CONNECTION") != "" {
 		fmt.Printf("Over SSH, forward the callback port from the machine with the browser first:\n  ssh -L %d:127.0.0.1:%d <this host>\n\n", port, port)
 	} else {
-		_ = exec.Command("xdg-open", link).Start()
+		openBrowser(link)
 	}
 
 	pending, err := prepareCredentialStore()

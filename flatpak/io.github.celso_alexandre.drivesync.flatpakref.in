@@ -1,0 +1,9 @@
+[Flatpak Ref]
+Name=io.github.celso_alexandre.drivesync
+Branch=stable
+Title=drivesync
+Url=https://celso-alexandre.github.io/drivesync/repo/
+SuggestRemoteName=drivesync
+RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
+IsRuntime=false
+GPGKey=@GPGKEY@

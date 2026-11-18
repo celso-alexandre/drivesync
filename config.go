@@ -118,7 +118,7 @@ func changeSelection(names []string, add bool) error {
 	return nil
 }
 
-func listFolders(ctx context.Context, asJSON bool) error {
+func listFolders(ctx context.Context, asJSON, withSizes bool) error {
 	drive, err := newDrive()
 	if err != nil {
 		return err
@@ -143,10 +143,24 @@ func listFolders(ctx context.Context, asJSON bool) error {
 		type folderChoice struct {
 			Name     string `json:"name"`
 			Selected bool   `json:"selected"`
+			Files    *int   `json:"files,omitempty"`
+			Bytes    *int64 `json:"bytes,omitempty"`
+		}
+		var sizes map[string]folderSize
+		if withSizes {
+			all, err := drive.ListAll(ctx)
+			if err != nil {
+				return err
+			}
+			sizes = folderSizes(all, folders)
 		}
 		choices := []folderChoice{}
 		for _, folder := range folders {
-			choices = append(choices, folderChoice{Name: folder.Name, Selected: slices.Contains(cfg.Folders, folder.Name)})
+			choice := folderChoice{Name: folder.Name, Selected: slices.Contains(cfg.Folders, folder.Name)}
+			if size, ok := sizes[folder.ID]; ok {
+				choice.Files, choice.Bytes = &size.files, &size.bytes
+			}
+			choices = append(choices, choice)
 		}
 		return json.NewEncoder(os.Stdout).Encode(choices)
 	}
@@ -226,4 +240,43 @@ func status() error {
 		fmt.Printf("  %s: %d files, %d folders synced\n", name, files, folders)
 	}
 	return nil
+}
+
+type folderSize struct {
+	files int
+	bytes int64
+}
+
+func folderSizes(all []File, tops []File) map[string]folderSize {
+	children := map[string][]*File{}
+	for i := range all {
+		for _, parent := range all[i].Parents {
+			children[parent] = append(children[parent], &all[i])
+		}
+	}
+	sizes := map[string]folderSize{}
+	for _, top := range tops {
+		var size folderSize
+		seen := map[string]bool{top.ID: true}
+		queue := []string{top.ID}
+		for len(queue) > 0 {
+			id := queue[0]
+			queue = queue[1:]
+			for _, child := range children[id] {
+				if seen[child.ID] {
+					continue
+				}
+				seen[child.ID] = true
+				switch {
+				case child.IsFolder():
+					queue = append(queue, child.ID)
+				case !strings.HasPrefix(child.MimeType, googleAppsPrefix):
+					size.files++
+					size.bytes += child.Size
+				}
+			}
+		}
+		sizes[top.ID] = size
+	}
+	return sizes
 }

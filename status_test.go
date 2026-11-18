@@ -149,3 +149,19 @@ func TestStatusLeavesStaleStatesWhenWorkStarts(t *testing.T) {
 		t.Fatal("pass did not end idle")
 	}
 }
+
+func TestFolderSizesCountRealFilesOnly(t *testing.T) {
+	all := []File{
+		{ID: "a", Name: "A", MimeType: folderMime, Parents: []string{"root"}},
+		{ID: "b", Name: "B", MimeType: folderMime, Parents: []string{"root"}},
+		{ID: "a1", Name: "x.jpg", MimeType: "image/jpeg", Size: 100, Parents: []string{"a"}},
+		{ID: "a2", Name: "sub", MimeType: folderMime, Parents: []string{"a"}},
+		{ID: "a3", Name: "y.pdf", MimeType: "application/pdf", Size: 50, Parents: []string{"a2"}},
+		{ID: "a4", Name: "doc", MimeType: googleAppsPrefix + "document", Parents: []string{"a2"}},
+		{ID: "b1", Name: "z", MimeType: "text/plain", Size: 7, Parents: []string{"b"}},
+	}
+	sizes := folderSizes(all, all[:2])
+	if sizes["a"].files != 2 || sizes["a"].bytes != 150 || sizes["b"].files != 1 || sizes["b"].bytes != 7 {
+		t.Fatalf("sizes %+v", sizes)
+	}
+}

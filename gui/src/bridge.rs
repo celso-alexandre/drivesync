@@ -14,6 +14,11 @@ pub mod qobject {
         #[qproperty(QString, last_sync)]
         #[qproperty(QString, recent_json)]
         #[qproperty(QString, root)]
+        #[qproperty(QString, account)]
+        #[qproperty(QString, progress_json)]
+        #[qproperty(QString, attention_json)]
+        #[qproperty(QString, selected_json)]
+        #[qproperty(bool, folders_sizing)]
         #[qproperty(bool, paused)]
         #[qproperty(bool, start_at_login)]
         #[qproperty(QString, folders_json)]
@@ -55,6 +60,15 @@ pub mod qobject {
 
         #[qinvokable]
         fn shutdown(self: Pin<&mut Backend>);
+
+        #[qinvokable]
+        fn answer(self: Pin<&mut Backend>, id: &QString, choice: &QString);
+
+        #[qinvokable]
+        fn cancel_sign_in(self: Pin<&mut Backend>);
+
+        #[qinvokable]
+        fn free_space(self: Pin<&mut Backend>) -> f64;
     }
 
     impl cxx_qt::Threading for Backend {}
@@ -75,6 +89,11 @@ pub struct BackendRust {
     last_sync: QString,
     recent_json: QString,
     root: QString,
+    account: QString,
+    progress_json: QString,
+    attention_json: QString,
+    selected_json: QString,
+    folders_sizing: bool,
     paused: bool,
     start_at_login: bool,
     folders_json: QString,
@@ -83,6 +102,7 @@ pub struct BackendRust {
     signing_in: bool,
     sign_in_log: QString,
     supervisor: Arc<Supervisor>,
+    login: Arc<std::sync::Mutex<Option<std::process::Child>>>,
     started: bool,
 }
 
@@ -94,6 +114,11 @@ impl Default for BackendRust {
             last_sync: QString::default(),
             recent_json: QString::from("[]"),
             root: QString::default(),
+            account: QString::default(),
+            progress_json: QString::from("null"),
+            attention_json: QString::from("[]"),
+            selected_json: QString::from("[]"),
+            folders_sizing: false,
             paused: false,
             start_at_login: false,
             folders_json: QString::from("[]"),
@@ -102,6 +127,7 @@ impl Default for BackendRust {
             signing_in: false,
             sign_in_log: QString::default(),
             supervisor: Supervisor::new(),
+            login: Arc::new(std::sync::Mutex::new(None)),
             started: false,
         }
     }
@@ -140,7 +166,9 @@ fn watch(handle: Handle, paths: &'static Paths, supervisor: Arc<Supervisor>) {
             let paused = current.get("paused").and_then(Value::as_bool).unwrap_or(false);
             let login = current.get("gui_start_at_login").and_then(Value::as_bool).unwrap_or(false);
             let root = current.get("root").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| paths.root.display().to_string());
+            let selected = current.get("folders").cloned().unwrap_or(Value::Array(Vec::new())).to_string();
             let _ = handle.queue(move |mut backend| {
+                backend.as_mut().set_selected_json(QString::from(&selected));
                 backend.as_mut().set_paused(paused);
                 backend.as_mut().set_start_at_login(login);
                 backend.as_mut().set_root(QString::from(&root));
@@ -168,7 +196,12 @@ fn watch(handle: Handle, paths: &'static Paths, supervisor: Arc<Supervisor>) {
                     newest_seen = Some(String::new());
                 }
                 let recent = serde_json::to_string(&status.recent.iter().take(20).map(|e| serde_json::json!({"time": e.time, "kind": e.kind, "path": e.path, "detail": e.detail})).collect::<Vec<_>>()).unwrap_or_else(|_| "[]".into());
+                let progress = status.progress.as_ref().map_or_else(|| "null".to_string(), Value::to_string);
+                let attention = Value::Array(status.attention.clone()).to_string();
                 let _ = handle.queue(move |mut backend| {
+                    backend.as_mut().set_progress_json(QString::from(&progress));
+                    backend.as_mut().set_attention_json(QString::from(&attention));
+                    backend.as_mut().set_account(QString::from(&status.account));
                     backend.as_mut().set_sync_state(QString::from(&status.state));
                     backend.as_mut().set_message(QString::from(&status.message));
                     backend.as_mut().set_last_sync(QString::from(&status.last_sync));
@@ -224,21 +257,40 @@ impl qobject::Backend {
 
     fn load_folders(mut self: Pin<&mut Self>) {
         self.as_mut().set_folders_loading(true);
+        self.as_mut().set_folders_sizing(false);
         self.as_mut().set_folders_error(QString::default());
         let handle = self.qt_thread();
         std::thread::spawn(move || {
-            let result = engine::run(&["folders", "--json"]).and_then(|out| {
-                if out.ok {
-                    Ok(out.stdout.trim().to_string())
-                } else {
-                    Err(out.stderr.trim().trim_start_matches("drivesync: ").to_string())
+            let list = |args: &[&str]| {
+                engine::run(args).and_then(|out| {
+                    if out.ok {
+                        Ok(out.stdout.trim().to_string())
+                    } else {
+                        Err(out.stderr.trim().trim_start_matches("drivesync: ").to_string())
+                    }
+                })
+            };
+            let quick = list(&["folders", "--json"]);
+            let ok = quick.is_ok();
+            let first = handle.clone();
+            let _ = first.queue(move |mut backend| {
+                backend.as_mut().set_folders_loading(false);
+                match quick {
+                    Ok(json) => {
+                        backend.as_mut().set_folders_json(QString::from(&json));
+                        backend.as_mut().set_folders_sizing(true);
+                    }
+                    Err(err) => backend.as_mut().set_folders_error(QString::from(&err)),
                 }
             });
+            if !ok {
+                return;
+            }
+            let sized = list(&["folders", "--json", "--sizes"]);
             let _ = handle.queue(move |mut backend| {
-                backend.as_mut().set_folders_loading(false);
-                match result {
-                    Ok(json) => backend.as_mut().set_folders_json(QString::from(&json)),
-                    Err(err) => backend.as_mut().set_folders_error(QString::from(&err)),
+                backend.as_mut().set_folders_sizing(false);
+                if let Ok(json) = sized {
+                    backend.as_mut().set_folders_json(QString::from(&json));
                 }
             });
         });
@@ -266,10 +318,11 @@ impl qobject::Backend {
         self.as_mut().set_sign_in_log(QString::from("Starting sign-in…"));
         let handle = self.qt_thread();
         let supervisor = Arc::clone(&self.rust().supervisor);
+        let slot = Arc::clone(&self.rust().login);
         std::thread::spawn(move || {
             let log_handle = handle.clone();
             let mut log = Vec::new();
-            let result = engine::run_streaming(&["login", "--stdin"], &format!("{id}\n{secret}\n"), |line| {
+            let result = engine::run_streaming(&["login", "--stdin"], &format!("{id}\n{secret}\n"), &slot, |line| {
                 log.push(line.trim_start_matches("drivesync: ").to_string());
                 let text = log.join("\n");
                 let _ = log_handle.queue(move |mut backend| backend.as_mut().set_sign_in_log(QString::from(&text)));
@@ -316,5 +369,42 @@ impl qobject::Backend {
 
     fn shutdown(self: Pin<&mut Self>) {
         self.rust().supervisor.stop();
+        self.as_ref().kill_login();
+    }
+
+    fn kill_login(self: Pin<&Self>) {
+        if let Some(child) = self.rust().login.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_mut() {
+            let _ = child.kill();
+        }
+    }
+
+    fn cancel_sign_in(self: Pin<&mut Self>) {
+        self.as_ref().kill_login();
+    }
+
+    fn answer(mut self: Pin<&mut Self>, id: &QString, choice: &QString) {
+        let id = id.to_string();
+        let choice = choice.to_string();
+        if choice != "keep" && choice != "delete" {
+            return;
+        }
+        if let Err(err) = change_settings(|s| {
+            let mut decisions = s.get("decisions").and_then(Value::as_object).cloned().unwrap_or_default();
+            decisions.insert(id, Value::String(choice));
+            s.insert("decisions".into(), Value::Object(decisions));
+            s.insert("sync_requested".into(), Value::from(now_nanos()));
+        }) {
+            self.as_mut().alert(QString::from("drivesync"), QString::from(&err));
+        }
+    }
+
+    fn free_space(self: Pin<&mut Self>) -> f64 {
+        let mut path = std::path::PathBuf::from(self.rust().root.to_string());
+        while !path.as_os_str().is_empty() && !path.exists() {
+            if !path.pop() {
+                break;
+            }
+        }
+        crate::entry::ffi::free_bytes(&path.display().to_string()) as f64
     }
 }

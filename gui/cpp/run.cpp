@@ -1,10 +1,10 @@
 #include "drivesync-gui/cpp/run.h"
 
-#include <QtCore/QLockFile>
-#include <QtCore/QStandardPaths>
-#include <QtCore/QDir>
+#include <QtCore/QStorageInfo>
 #include <QtGui/QIcon>
 #include <QtQml/QQmlApplicationEngine>
+#include <QtNetwork/QLocalServer>
+#include <QtNetwork/QLocalSocket>
 #include <QtWidgets/QApplication>
 
 #if defined(Q_OS_LINUX)
@@ -25,14 +25,26 @@
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/qt/qml/drivesync/icons/drivesync.svg")));
     QApplication::setQuitOnLastWindowClosed(false);
 
-    QString runtime = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation);
-    if (runtime.isEmpty()) {
-        runtime = QDir::tempPath();
+    QString serverName = QStringLiteral("io.github.celso_alexandre.drivesync");
+    const QByteArray flatpakId = qgetenv("FLATPAK_ID");
+    const QByteArray runtimeDir = qgetenv("XDG_RUNTIME_DIR");
+    if (!flatpakId.isEmpty() && !runtimeDir.isEmpty()) {
+        serverName = QString::fromLocal8Bit(runtimeDir) + QStringLiteral("/app/") + QString::fromLocal8Bit(flatpakId) + QStringLiteral("/drivesync-gui.sock");
     }
-    QLockFile lock(runtime + QStringLiteral("/drivesync-gui.lock"));
-    lock.setStaleLockTime(0);
-    if (!lock.tryLock(100)) {
-        return 0;
+    {
+        QLocalSocket probe;
+        probe.connectToServer(serverName);
+        if (probe.waitForConnected(300)) {
+            probe.write(start_hidden ? "hidden\n" : "show\n");
+            probe.waitForBytesWritten(300);
+            return 0;
+        }
+    }
+    QLocalServer::removeServer(serverName);
+    QLocalServer server;
+    server.setSocketOptions(QLocalServer::UserAccessOption);
+    if (!server.listen(serverName)) {
+        return 1;
     }
 
     QQmlApplicationEngine engine;
@@ -41,7 +53,28 @@
     if (engine.rootObjects().isEmpty()) {
         return 1;
     }
+    QObject *root = engine.rootObjects().constFirst();
+    QObject::connect(&server, &QLocalServer::newConnection, root, [&server, root]() {
+        while (QLocalSocket *client = server.nextPendingConnection()) {
+            QObject::connect(client, &QLocalSocket::readyRead, root, [client, root]() {
+                if (client->readAll().startsWith("show")) {
+                    QMetaObject::invokeMethod(root, "showWindow");
+                }
+                client->disconnectFromServer();
+            });
+            QObject::connect(client, &QLocalSocket::disconnected, client, &QObject::deleteLater);
+        }
+    });
     return app.exec();
+}
+
+::std::int64_t free_bytes(::rust::Str path)
+{
+    QStorageInfo storage(QString::fromUtf8(path.data(), static_cast<qsizetype>(path.size())));
+    if (!storage.isValid() || !storage.isReady()) {
+        return -1;
+    }
+    return storage.bytesAvailable();
 }
 
 bool request_background(bool autostart)

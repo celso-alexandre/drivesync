@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 )
 
@@ -61,7 +62,7 @@ func runCommand(ctx context.Context, name string, args []string) error {
 		if launched, err := maybeLaunch(ctx, append([]string{"folders"}, args...), foldersPolicy); launched {
 			return err
 		}
-		return listFolders(ctx, len(args) == 1 && args[0] == "--json")
+		return listFolders(ctx, slices.Contains(args, "--json"), slices.Contains(args, "--sizes"))
 	case "paths":
 		return printPaths()
 	case "select":

@@ -33,7 +33,13 @@ pub struct Status {
     #[serde(default)]
     pub message: String,
     #[serde(default)]
+    pub account: String,
+    #[serde(default)]
     pub last_sync: String,
+    #[serde(default)]
+    pub progress: Option<serde_json::Value>,
+    #[serde(default)]
+    pub attention: Vec<serde_json::Value>,
     #[serde(default)]
     pub recent: Vec<Event>,
 }
@@ -72,7 +78,7 @@ pub fn run(args: &[&str]) -> Result<Output, String> {
     })
 }
 
-pub fn run_streaming(args: &[&str], input: &str, mut line: impl FnMut(String)) -> Result<bool, String> {
+pub fn run_streaming(args: &[&str], input: &str, slot: &Mutex<Option<Child>>, mut line: impl FnMut(String)) -> Result<bool, String> {
     let mut child = Command::new(binary())
         .args(args)
         .stdin(Stdio::piped())
@@ -84,6 +90,8 @@ pub fn run_streaming(args: &[&str], input: &str, mut line: impl FnMut(String)) -
         stdin.write_all(input.as_bytes()).map_err(|err| err.to_string())?;
     }
     let stderr = child.stderr.take();
+    let stdout = child.stdout.take();
+    *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(child);
     let errors = thread::spawn(move || {
         let mut lines = Vec::new();
         if let Some(stderr) = stderr {
@@ -93,7 +101,7 @@ pub fn run_streaming(args: &[&str], input: &str, mut line: impl FnMut(String)) -
         }
         lines
     });
-    if let Some(stdout) = child.stdout.take() {
+    if let Some(stdout) = stdout {
         for text in BufReader::new(stdout).lines().map_while(Result::ok) {
             line(text);
         }
@@ -101,8 +109,11 @@ pub fn run_streaming(args: &[&str], input: &str, mut line: impl FnMut(String)) -
     for text in errors.join().unwrap_or_default() {
         line(text);
     }
-    let status = child.wait().map_err(|err| err.to_string())?;
-    Ok(status.success())
+    let taken = slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    match taken {
+        Some(mut child) => Ok(child.wait().map_err(|err| err.to_string())?.success()),
+        None => Ok(false),
+    }
 }
 
 pub fn paths() -> Result<&'static Paths, String> {

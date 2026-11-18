@@ -6,6 +6,7 @@ fn main() {
         .file("src/bridge.rs")
         .file("src/entry.rs")
         .qt_module("Widgets")
+        .qt_module("Network")
         .cpp_file("cpp/run.cpp")
         .include_prefix("drivesync-gui")
         .qrc_resources([
@@ -21,6 +22,7 @@ fn main() {
     }
     builder.build();
     println!("cargo:rustc-link-arg=-lQt6Widgets");
+    println!("cargo:rustc-link-arg=-lQt6Network");
     if linux {
         println!("cargo:rustc-link-arg=-lQt6DBus");
         println!("cargo:rustc-cfg=portal");

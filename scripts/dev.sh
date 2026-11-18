@@ -60,7 +60,7 @@ check | test | sandbox | build | fmt | vet | shell) ;;
 esac
 
 GO_VERSION="$(awk '$1 == "golang" { print $2; exit }' "$REPO_DIR/.tool-versions")"
-GO_IMAGE="${DRIVESYNC_GO_IMAGE:-docker.io/library/golang:$GO_VERSION@$(awk '$1 == "golang-image-digest" { print $2; exit }' "$REPO_DIR/.tool-versions")}"
+GO_IMAGE="${DRIVESYNC_GO_IMAGE:-docker.io/library/golang:$GO_VERSION@$(cat "$REPO_DIR/.golang-image-digest")}"
 
 ENGINE=""
 for candidate in ${CONTAINER_ENGINE:-podman docker}; do

@@ -16,6 +16,8 @@ type Config struct {
 	Root            string   `json:"root"`
 	Folders         []string `json:"folders"`
 	IntervalSeconds int      `json:"interval_seconds"`
+	Paused          bool     `json:"paused,omitempty"`
+	SyncRequested   int64    `json:"sync_requested,omitempty"`
 }
 
 func configPath() (string, error) {
@@ -115,7 +117,7 @@ func changeSelection(names []string, add bool) error {
 	return nil
 }
 
-func listFolders(ctx context.Context) error {
+func listFolders(ctx context.Context, asJSON bool) error {
 	drive, err := newDrive()
 	if err != nil {
 		return err
@@ -136,6 +138,17 @@ func listFolders(ctx context.Context) error {
 		return err
 	}
 	slices.SortFunc(folders, func(a, b File) int { return strings.Compare(a.Name, b.Name) })
+	if asJSON {
+		type folderChoice struct {
+			Name     string `json:"name"`
+			Selected bool   `json:"selected"`
+		}
+		choices := []folderChoice{}
+		for _, folder := range folders {
+			choices = append(choices, folderChoice{Name: folder.Name, Selected: slices.Contains(cfg.Folders, folder.Name)})
+		}
+		return json.NewEncoder(os.Stdout).Encode(choices)
+	}
 	for _, folder := range folders {
 		marker := " "
 		if slices.Contains(cfg.Folders, folder.Name) {
@@ -145,6 +158,30 @@ func listFolders(ctx context.Context) error {
 	}
 	fmt.Println("\n* = selected. Change with: drivesync select NAME / drivesync unselect NAME")
 	return nil
+}
+
+func printPaths() error {
+	cfgPath, err := configPath()
+	if err != nil {
+		return err
+	}
+	state, err := stateDir()
+	if err != nil {
+		return err
+	}
+	cfg, err := loadConfig()
+	if err != nil {
+		return err
+	}
+	if err := enterSandbox(sandboxPolicy{}); err != nil {
+		return err
+	}
+	return json.NewEncoder(os.Stdout).Encode(map[string]string{
+		"config": cfgPath,
+		"state":  state,
+		"status": filepath.Join(state, "status.json"),
+		"root":   cfg.Root,
+	})
 }
 
 func status() error {

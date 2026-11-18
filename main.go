@@ -54,14 +54,16 @@ func main() {
 func runCommand(ctx context.Context, name string, args []string) error {
 	switch name {
 	case "login":
-		return login(ctx)
+		return login(ctx, len(args) == 1 && args[0] == "--stdin")
 	case "logout":
 		return logout()
 	case "folders":
-		if launched, err := maybeLaunch(ctx, []string{"folders"}, foldersPolicy); launched {
+		if launched, err := maybeLaunch(ctx, append([]string{"folders"}, args...), foldersPolicy); launched {
 			return err
 		}
-		return listFolders(ctx)
+		return listFolders(ctx, len(args) == 1 && args[0] == "--json")
+	case "paths":
+		return printPaths()
 	case "select":
 		return changeSelection(args, true)
 	case "unselect":

@@ -87,6 +87,7 @@ type syncer struct {
 	folderIDs   map[string]string
 	trashedIDs  map[string]bool
 	warned      map[string]bool
+	status      *statusWriter
 }
 
 func loadState() (*State, string, error) {
@@ -127,8 +128,15 @@ func startSync(ctx context.Context, loop, allowDelete bool) error {
 	}
 	defer lock.Close()
 
+	status := newStatusWriter()
+	status.set(statusStarting, "")
 	drive, err := newDrive()
 	if err != nil {
+		if errors.Is(err, errNotSignedIn) {
+			status.set(statusSignedOut, "")
+		} else {
+			status.set(statusError, err.Error())
+		}
 		return err
 	}
 	state, statePath, err := loadState()
@@ -142,7 +150,7 @@ func startSync(ctx context.Context, loop, allowDelete bool) error {
 	if err := enterSandbox(policy); err != nil {
 		return err
 	}
-	s := &syncer{drive: drive, state: state, statePath: statePath, allowDelete: allowDelete, sandboxRoot: cfg.Root, warned: map[string]bool{}}
+	s := &syncer{drive: drive, state: state, statePath: statePath, allowDelete: allowDelete, sandboxRoot: cfg.Root, warned: map[string]bool{}, status: status}
 	for {
 		err := s.cycle(ctx)
 		if ctx.Err() != nil {
@@ -152,6 +160,7 @@ func startSync(ctx context.Context, loop, allowDelete bool) error {
 			return err
 		}
 		if err != nil {
+			s.status.set(statusError, err.Error())
 			if !loop {
 				return err
 			}
@@ -164,18 +173,44 @@ func startSync(ctx context.Context, loop, allowDelete bool) error {
 		if s.cfg != nil {
 			interval = time.Duration(s.cfg.IntervalSeconds) * time.Second
 		}
-		select {
-		case <-ctx.Done():
+		if !waitForNextPass(ctx, interval) {
 			return nil
-		case <-time.After(interval):
 		}
 	}
+}
+
+func configModTime() time.Time {
+	path, err := configPath()
+	if err != nil {
+		return time.Time{}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
+}
+
+func waitForNextPass(ctx context.Context, interval time.Duration) bool {
+	deadline := time.Now().Add(interval)
+	start := configModTime()
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(time.Second):
+		}
+		if !configModTime().Equal(start) {
+			return true
+		}
+	}
+	return true
 }
 
 func (s *syncer) warnOnce(message string) {
 	if !s.warned[message] {
 		s.warned[message] = true
-		log.Print(message)
+		s.status.event(eventWarning, "", message)
 	}
 }
 
@@ -193,8 +228,12 @@ func (s *syncer) cycle(ctx context.Context) error {
 			delete(s.state.Entries, p)
 		}
 	}
+	if cfg.Paused {
+		s.status.set(statusPaused, "")
+		return s.saveState()
+	}
 	if len(cfg.Folders) == 0 {
-		s.warnOnce("no folders selected; run: drivesync folders, then drivesync select NAME")
+		s.status.set(statusNoFolders, "")
 		return s.saveState()
 	}
 	if s.rootID == "" {
@@ -210,17 +249,24 @@ func (s *syncer) cycle(ctx context.Context) error {
 	}
 	s.buildRemote()
 	s.trashedIDs = map[string]bool{}
+	var folderErr error
 	for _, name := range cfg.Folders {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if err := s.syncFolder(ctx, name); err != nil {
-			log.Printf("%s: %v", name, err)
+			s.status.event(eventError, name, err.Error())
+			folderErr = err
 		}
 		if err := s.saveState(); err != nil {
 			return err
 		}
 	}
+	if folderErr != nil {
+		s.status.set(statusError, folderErr.Error())
+		return nil
+	}
+	s.status.set(statusIdle, "")
 	return nil
 }
 
@@ -445,7 +491,7 @@ func (s *syncer) syncFolder(ctx context.Context, name string) error {
 		}
 		act, err := s.decide(p, remote, item, hasLocal, entry)
 		if err != nil {
-			log.Printf("%s: %v", p, err)
+			s.status.event(eventError, p, err.Error())
 			continue
 		}
 		if act == actionTrashRemote || act == actionTrashLocal {
@@ -458,7 +504,7 @@ func (s *syncer) syncFolder(ctx context.Context, name string) error {
 
 	blockDeletes := !s.allowDelete && deletions > massDeleteMinimum && deletions*2 > known
 	if blockDeletes {
-		log.Printf("%s: refusing to delete %d of %d items in one pass; if intended, run: drivesync sync --allow-delete", name, deletions, known)
+		s.status.event(eventWarning, name, fmt.Sprintf("refused to delete %d of %d items in one pass; if that was intended, allow it once", deletions, known))
 	}
 	for _, st := range steps {
 		if ctx.Err() != nil {
@@ -468,7 +514,7 @@ func (s *syncer) syncFolder(ctx context.Context, name string) error {
 			continue
 		}
 		if err := s.apply(ctx, st); err != nil {
-			log.Printf("%s: %v", st.path, err)
+			s.status.event(eventError, st.path, err.Error())
 		}
 	}
 	return s.syncFolders(ctx, folders, blockDeletes)
@@ -499,7 +545,7 @@ func (s *syncer) matchRemoteCase(name string, local map[string]localItem) (map[s
 					s.state.Entries[target+strings.TrimPrefix(old, p)] = entry
 				}
 			}
-			log.Printf("%s: renamed to %s to match Drive", p, path.Base(target))
+			s.status.event(eventRenamed, p, "renamed to "+path.Base(target)+" to match Drive")
 			renamed = true
 			break
 		}
@@ -640,7 +686,7 @@ func (s *syncer) apply(ctx context.Context, st step) error {
 		if err := os.Rename(full, copyPath); err != nil {
 			return err
 		}
-		log.Printf("%s: changed on both sides; kept your version as %s", p, filepath.Base(copyPath))
+		s.status.event(eventConflict, p, "changed on both sides; your version was kept as "+filepath.Base(copyPath))
 		return s.download(ctx, p, remote)
 	case actionRecord:
 		return s.record(p, remote)
@@ -651,7 +697,7 @@ func (s *syncer) apply(ctx context.Context, st step) error {
 		s.trashedIDs[s.state.Entries[p].ID] = true
 		delete(s.state.Entries, p)
 		delete(s.remote, p)
-		log.Printf("%s: deleted locally, moved to Drive trash", p)
+		s.status.event(eventDeletedInDrive, p, "deleted locally, moved to the Drive trash")
 	case actionTrashLocal:
 		if err := s.unchangedSinceScan(p); err != nil {
 			return err
@@ -660,7 +706,7 @@ func (s *syncer) apply(ctx context.Context, st step) error {
 			return err
 		}
 		delete(s.state.Entries, p)
-		log.Printf("%s: deleted in Drive, moved to %s", p, filepath.Join(s.cfg.Root, tempPrefix+"trash"))
+		s.status.event(eventDeletedLocally, p, "deleted in Drive, moved to "+filepath.Join(s.cfg.Root, tempPrefix+"trash"))
 	case actionForget:
 		delete(s.state.Entries, p)
 	}
@@ -678,7 +724,7 @@ func (s *syncer) download(ctx context.Context, p string, remote *File) error {
 	if err := os.Chtimes(full, time.Now(), remote.ModifiedTime); err != nil {
 		return err
 	}
-	log.Printf("%s: downloaded", p)
+	s.status.event(eventDownloaded, p, "")
 	return s.record(p, remote)
 }
 
@@ -709,7 +755,7 @@ func (s *syncer) upload(ctx context.Context, p, id string) error {
 	s.remote[p] = uploaded
 	item := toLocalItem(info)
 	s.state.Entries[p] = &Entry{ID: uploaded.ID, MD5: uploaded.MD5, Size: item.Size, LocalModified: item.Modified, LocalChanged: item.Changed}
-	log.Printf("%s: uploaded", p)
+	s.status.event(eventUploaded, p, "")
 	return nil
 }
 
@@ -731,7 +777,7 @@ func (s *syncer) ensureRemoteFolder(ctx context.Context, p string) (string, erro
 	s.folderIDs[p] = folder.ID
 	s.remote[p] = folder
 	s.state.Entries[p] = &Entry{ID: folder.ID, Folder: true}
-	log.Printf("%s: folder created in Drive", p)
+	s.status.event(eventFolderCreated, p, "folder created in Drive")
 	return folder.ID, nil
 }
 
@@ -747,7 +793,7 @@ func (s *syncer) syncFolders(ctx context.Context, folders []string, blockDeletes
 			s.state.Entries[p] = &Entry{ID: remote.ID, Folder: true}
 		case remote != nil && entry == nil:
 			if err := os.MkdirAll(s.localPath(p), 0o755); err != nil {
-				log.Printf("%s: %v", p, err)
+				s.status.event(eventError, p, err.Error())
 				continue
 			}
 			s.state.Entries[p] = &Entry{ID: remote.ID, Folder: true}
@@ -755,7 +801,7 @@ func (s *syncer) syncFolders(ctx context.Context, folders []string, blockDeletes
 			removeRemote = append(removeRemote, p)
 		case localExists && entry == nil:
 			if _, err := s.ensureRemoteFolder(ctx, p); err != nil {
-				log.Printf("%s: %v", p, err)
+				s.status.event(eventError, p, err.Error())
 			}
 		case localExists:
 			removeLocal = append(removeLocal, p)
@@ -771,28 +817,28 @@ func (s *syncer) syncFolders(ctx context.Context, folders []string, blockDeletes
 		remote := s.remote[p]
 		if s.hasLiveChildren(remote.ID) {
 			if err := os.MkdirAll(s.localPath(p), 0o755); err != nil {
-				log.Printf("%s: %v", p, err)
+				s.status.event(eventError, p, err.Error())
 			}
 			s.warnOnce(p + ": folder still holds Google Docs or skipped items in Drive, so it was not deleted there")
 			continue
 		}
 		if err := s.drive.Trash(ctx, remote.ID); err != nil {
-			log.Printf("%s: %v", p, err)
+			s.status.event(eventError, p, err.Error())
 			continue
 		}
 		s.trashedIDs[remote.ID] = true
 		delete(s.state.Entries, p)
 		delete(s.remote, p)
-		log.Printf("%s: folder deleted locally, moved to Drive trash", p)
+		s.status.event(eventDeletedInDrive, p, "folder deleted locally, moved to the Drive trash")
 	}
 	slices.Reverse(removeLocal)
 	for _, p := range removeLocal {
 		if err := os.Remove(s.localPath(p)); err != nil {
-			log.Printf("%s: folder deleted in Drive but kept locally: %v", p, err)
+			s.status.event(eventWarning, p, "folder deleted in Drive but kept locally: "+err.Error())
 			continue
 		}
 		delete(s.state.Entries, p)
-		log.Printf("%s: folder deleted in Drive, removed locally", p)
+		s.status.event(eventDeletedLocally, p, "folder deleted in Drive, removed locally")
 	}
 	return nil
 }

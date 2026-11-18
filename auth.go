@@ -47,8 +47,9 @@ type callback struct {
 	err  error
 }
 
-func login(ctx context.Context) error {
-	fmt.Print(`drivesync signs in with your own Google OAuth client, so no third party holds a key to your Drive.
+func login(ctx context.Context, fromStdin bool) error {
+	if !fromStdin {
+		fmt.Print(`drivesync signs in with your own Google OAuth client, so no third party holds a key to your Drive.
 If you don't have one yet (about 5 minutes, free):
 
   1. https://console.cloud.google.com/projectcreate         create a project
@@ -57,12 +58,19 @@ If you don't have one yet (about 5 minutes, free):
   4. https://console.cloud.google.com/auth/clients/create   type "Desktop app", copy the ID and secret
 
 `)
+	}
 	input := bufio.NewReader(os.Stdin)
-	clientID, err := prompt(input, "OAuth client ID: ")
+	label := func(text string) string {
+		if fromStdin {
+			return ""
+		}
+		return text
+	}
+	clientID, err := prompt(input, label("OAuth client ID: "))
 	if err != nil {
 		return err
 	}
-	clientSecret, err := prompt(input, "OAuth client secret: ")
+	clientSecret, err := prompt(input, label("OAuth client secret: "))
 	if err != nil {
 		return err
 	}

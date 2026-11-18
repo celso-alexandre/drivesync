@@ -195,7 +195,7 @@ scripts/dev.sh sandbox   # sandbox tests; fails if the kernel can't enforce it
 scripts/dev.sh shell     # shell inside the dev container
 ```
 
-The Go version and image digest are pinned in `.tool-versions`. CI runs the same checks on Linux, plus native tests and a live sandbox self-test (`drivesync selftest-sandbox`) on macOS and Windows. It uses only GitHub's own actions, pinned by commit.
+The Go version is pinned in `.tool-versions` (asdf works with it directly) and the dev image digest in `.golang-image-digest`. CI runs the same checks on Linux, plus native tests and a live sandbox self-test (`drivesync selftest-sandbox`) on macOS and Windows. It uses only GitHub's own actions, pinned by commit.
 
 The test suite runs drivesync against an in-memory fake of the Drive API, which keeps revision history the way real Drive does. It covers:
 

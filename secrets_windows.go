@@ -22,7 +22,6 @@ const (
 	credTypeGeneric         = 1
 	credPersistLocalMachine = 2
 	errorNotFound           = syscall.Errno(1168)
-	credentialTarget        = keyringService + "/" + keyringAccount
 )
 
 type winCredential struct {
@@ -40,8 +39,12 @@ type winCredential struct {
 	UserName           *uint16
 }
 
-func loadStoredCredentials() (*credentials, error) {
-	target, err := syscall.UTF16PtrFromString(credentialTarget)
+func credentialTarget(entry string) string {
+	return keyringService + "/" + entry
+}
+
+func lookupCredentials(entry string) (*credentials, error) {
+	target, err := syscall.UTF16PtrFromString(credentialTarget(entry))
 	if err != nil {
 		return nil, err
 	}
@@ -69,11 +72,11 @@ func (p *pendingSecret) commit(creds credentials) error {
 	if err != nil {
 		return err
 	}
-	target, err := syscall.UTF16PtrFromString(credentialTarget)
+	target, err := syscall.UTF16PtrFromString(credentialTarget(keyringEntry(accountID)))
 	if err != nil {
 		return err
 	}
-	user, err := syscall.UTF16PtrFromString(keyringAccount)
+	user, err := syscall.UTF16PtrFromString(keyringEntry(accountID))
 	if err != nil {
 		return err
 	}
@@ -94,7 +97,7 @@ func (p *pendingSecret) commit(creds credentials) error {
 func (p *pendingSecret) abort() {}
 
 func clearCredentials() error {
-	target, err := syscall.UTF16PtrFromString(credentialTarget)
+	target, err := syscall.UTF16PtrFromString(credentialTarget(keyringEntry(accountID)))
 	if err != nil {
 		return err
 	}

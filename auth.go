@@ -47,8 +47,16 @@ type callback struct {
 	err  error
 }
 
-func login(ctx context.Context, fromStdin bool) error {
-	if !fromStdin {
+func login(ctx context.Context, fromStdin bool, reuseFrom string) error {
+	var clientID, clientSecret string
+	if reuseFrom != "" {
+		existing, err := lookupCredentials(keyringEntry(reuseFrom))
+		if err != nil {
+			return fmt.Errorf("cannot reuse the key of account %s: %w", reuseFrom, err)
+		}
+		clientID, clientSecret = existing.ClientID, existing.ClientSecret
+	}
+	if !fromStdin && reuseFrom == "" {
 		fmt.Print(`drivesync signs in with your own Google OAuth client, so no third party holds a key to your Drive.
 If you don't have one yet (about 5 minutes, free):
 
@@ -59,20 +67,21 @@ If you don't have one yet (about 5 minutes, free):
 
 `)
 	}
-	input := bufio.NewReader(os.Stdin)
-	label := func(text string) string {
-		if fromStdin {
-			return ""
+	if reuseFrom == "" {
+		input := bufio.NewReader(os.Stdin)
+		label := func(text string) string {
+			if fromStdin {
+				return ""
+			}
+			return text
 		}
-		return text
-	}
-	clientID, err := prompt(input, label("OAuth client ID: "))
-	if err != nil {
-		return err
-	}
-	clientSecret, err := prompt(input, label("OAuth client secret: "))
-	if err != nil {
-		return err
+		var err error
+		if clientID, err = prompt(input, label("OAuth client ID: ")); err != nil {
+			return err
+		}
+		if clientSecret, err = prompt(input, label("OAuth client secret: ")); err != nil {
+			return err
+		}
 	}
 
 	verifier := randomToken()
@@ -95,7 +104,7 @@ If you don't have one yet (about 5 minutes, free):
 		"code_challenge_method": {"S256"},
 		"state":                 {state},
 		"access_type":           {"offline"},
-		"prompt":                {"consent"},
+		"prompt":                {"consent select_account"},
 	}
 	link := authEndpoint + "?" + params.Encode()
 	fmt.Printf("\nSign in with Google in your browser:\n\n%s\n\n", link)
@@ -179,11 +188,20 @@ If you don't have one yet (about 5 minutes, free):
 	if token.RefreshToken == "" {
 		return errors.New("Google returned no refresh token")
 	}
-	if err := pending.commit(credentials{ClientID: clientID, ClientSecret: clientSecret, RefreshToken: token.RefreshToken}); err != nil {
+	creds := credentials{ClientID: clientID, ClientSecret: clientSecret, RefreshToken: token.RefreshToken}
+	signedIn := &Drive{
+		tokens: &tokenSource{creds: creds, accessToken: token.AccessToken, expiry: time.Now().Add(time.Duration(token.ExpiresIn) * time.Second)},
+		client: &http.Client{Timeout: 30 * time.Second},
+	}
+	email, emailErr := signedIn.Account(ctx)
+	if err := pending.commit(creds); err != nil {
 		committed = true
 		return err
 	}
 	committed = true
+	if emailErr == nil && email != "" {
+		fmt.Printf("ACCOUNT_EMAIL %s\n", email)
+	}
 	fmt.Println("Signed in. Next: drivesync folders")
 	return nil
 }

@@ -16,7 +16,7 @@ var version = "dev"
 const usage = `drivesync - two-way mirror of selected Google Drive folders
 
 Usage:
-  drivesync [--unsafe-no-sandbox] COMMAND
+  drivesync [--unsafe-no-sandbox] [--account ID] COMMAND
 
 Commands:
   drivesync login                 sign in with your own OAuth client
@@ -32,9 +32,22 @@ Commands:
 
 func main() {
 	args := os.Args[1:]
-	if len(args) > 0 && args[0] == "--unsafe-no-sandbox" {
-		sandboxDisabled = true
-		args = args[1:]
+	for len(args) > 0 {
+		if args[0] == "--unsafe-no-sandbox" {
+			sandboxDisabled = true
+			args = args[1:]
+			continue
+		}
+		if args[0] == "--account" && len(args) > 1 {
+			if !accountIDPattern.MatchString(args[1]) {
+				fmt.Fprintln(os.Stderr, "drivesync: account ids use lowercase letters, digits and dashes")
+				os.Exit(2)
+			}
+			accountID = args[1]
+			args = args[2:]
+			continue
+		}
+		break
 	}
 	if len(args) == 0 {
 		fmt.Fprint(os.Stderr, usage)
@@ -55,7 +68,14 @@ func main() {
 func runCommand(ctx context.Context, name string, args []string) error {
 	switch name {
 	case "login":
-		return login(ctx, len(args) == 1 && args[0] == "--stdin")
+		reuseFrom := ""
+		if i := slices.Index(args, "--reuse-from"); i >= 0 && i+1 < len(args) {
+			reuseFrom = args[i+1]
+			if !accountIDPattern.MatchString(reuseFrom) {
+				return errors.New("invalid account id for --reuse-from")
+			}
+		}
+		return login(ctx, slices.Contains(args, "--stdin"), reuseFrom)
 	case "logout":
 		return logout()
 	case "folders":

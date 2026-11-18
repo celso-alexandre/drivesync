@@ -36,7 +36,7 @@ func openBrowser(link string) {
 	_ = exec.Command("xdg-open", link).Start()
 }
 
-func stateDir() (string, error) {
+func baseStateDir() (string, error) {
 	if dir := os.Getenv("XDG_STATE_HOME"); dir != "" {
 		return filepath.Join(dir, "drivesync"), nil
 	}

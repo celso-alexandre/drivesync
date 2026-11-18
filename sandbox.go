@@ -54,6 +54,9 @@ func maybeLaunch(ctx context.Context, args []string, policy func() (sandboxPolic
 	if err != nil {
 		return true, err
 	}
+	if accountID != "" {
+		args = append([]string{"--account", accountID}, args...)
+	}
 	if err := launchSandboxed(ctx, args, p, creds); err != nil {
 		return true, err
 	}

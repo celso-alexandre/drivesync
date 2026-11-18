@@ -12,10 +12,12 @@ import (
 	"syscall"
 )
 
-var secretAttributes = []string{"application", keyringService, "key", keyringAccount}
+func secretAttributes(entry string) []string {
+	return []string{"application", keyringService, "key", entry}
+}
 
-func loadStoredCredentials() (*credentials, error) {
-	out, err := exec.Command("secret-tool", append([]string{"lookup"}, secretAttributes...)...).Output()
+func lookupCredentials(entry string) (*credentials, error) {
+	out, err := exec.Command("secret-tool", append([]string{"lookup"}, secretAttributes(entry)...)...).Output()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -32,7 +34,7 @@ type pendingSecret struct {
 }
 
 func prepareCredentialStore() (*pendingSecret, error) {
-	cmd := exec.Command("secret-tool", append([]string{"store", "--label=drivesync"}, secretAttributes...)...)
+	cmd := exec.Command("secret-tool", append([]string{"store", "--label=drivesync"}, secretAttributes(keyringEntry(accountID))...)...)
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 	stdin, err := cmd.StdinPipe()
@@ -71,7 +73,7 @@ func (p *pendingSecret) abort() {
 }
 
 func clearCredentials() error {
-	cmd := exec.Command("secret-tool", append([]string{"clear"}, secretAttributes...)...)
+	cmd := exec.Command("secret-tool", append([]string{"clear"}, secretAttributes(keyringEntry(accountID))...)...)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("starting secret-tool: %w", err)
 	}

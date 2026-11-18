@@ -315,7 +315,7 @@ func (s *syncer) cycle(ctx context.Context) error {
 			return ctx.Err()
 		}
 		if err := s.executePlan(ctx, plan); err != nil {
-			s.status.event(eventError, plan.name, err.Error())
+			s.reportFailure(ctx, plan.name, err)
 			folderErr = err
 		}
 		if err := s.saveState(); err != nil {
@@ -613,7 +613,7 @@ func (s *syncer) executePlan(ctx context.Context, plan *folderPlan) error {
 			continue
 		}
 		if err := s.apply(ctx, st, s.remoteFile(st.path)); err != nil {
-			s.status.event(eventError, st.path, err.Error())
+			s.reportFailure(ctx, st.path, err)
 		}
 	}
 	s.runTransfers(ctx, transfers)
@@ -641,7 +641,7 @@ func (s *syncer) runTransfers(ctx context.Context, steps []step) {
 			defer wg.Done()
 			for st := range work {
 				if err := s.apply(ctx, st, s.remoteFile(st.path)); err != nil {
-					s.status.event(eventError, st.path, err.Error())
+					s.reportFailure(ctx, st.path, err)
 				}
 				s.status.stepDone()
 			}
@@ -963,7 +963,7 @@ func (s *syncer) syncFolders(ctx context.Context, folders []string, blockDeletes
 			s.state.Entries[p] = &Entry{ID: remote.ID, Folder: true}
 		case remote != nil && entry == nil:
 			if err := os.MkdirAll(s.localPath(p), 0o755); err != nil {
-				s.status.event(eventError, p, err.Error())
+				s.reportFailure(ctx, p, err)
 				continue
 			}
 			s.state.Entries[p] = &Entry{ID: remote.ID, Folder: true}
@@ -971,7 +971,7 @@ func (s *syncer) syncFolders(ctx context.Context, folders []string, blockDeletes
 			removeRemote = append(removeRemote, p)
 		case localExists && entry == nil:
 			if _, err := s.ensureRemoteFolder(ctx, p); err != nil {
-				s.status.event(eventError, p, err.Error())
+				s.reportFailure(ctx, p, err)
 			}
 		case localExists:
 			removeLocal = append(removeLocal, p)
@@ -987,13 +987,13 @@ func (s *syncer) syncFolders(ctx context.Context, folders []string, blockDeletes
 		remote := s.remote[p]
 		if s.hasLiveChildren(remote.ID) {
 			if err := os.MkdirAll(s.localPath(p), 0o755); err != nil {
-				s.status.event(eventError, p, err.Error())
+				s.reportFailure(ctx, p, err)
 			}
 			s.warnOnce(p + ": folder still holds Google Docs or skipped items in Drive, so it was not deleted there")
 			continue
 		}
 		if err := s.drive.Trash(ctx, remote.ID); err != nil {
-			s.status.event(eventError, p, err.Error())
+			s.reportFailure(ctx, p, err)
 			continue
 		}
 		s.trashedIDs[remote.ID] = true
@@ -1035,4 +1035,11 @@ func conflictPath(full string) string {
 	ext := filepath.Ext(base)
 	stem := strings.TrimSuffix(base, ext)
 	return filepath.Join(dir, fmt.Sprintf("%s (conflict %s)%s", stem, time.Now().Format(conflictTimeFormat), ext))
+}
+
+func (s *syncer) reportFailure(ctx context.Context, p string, err error) {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		return
+	}
+	s.status.event(eventError, p, err.Error())
 }

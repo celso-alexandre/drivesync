@@ -330,10 +330,13 @@ func newHarnessIn(t *testing.T, home string) *harness {
 	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".state"))
 	fake := newFakeDrive(t)
 	root := filepath.Join(home, "GoogleDrive")
+	if accountID != "" {
+		root = filepath.Join(root, accountID)
+	}
 	if err := saveConfig(&Config{Root: root, Folders: []string{"Work"}, IntervalSeconds: 30}); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(home, ".state", "drivesync"), 0o700); err != nil {
+	if dir, err := stateDir(); err != nil || os.MkdirAll(dir, 0o700) != nil {
 		t.Fatal(err)
 	}
 	h := &harness{t: t, home: home, drive: fake, root: root, clock: time.Now().Add(-time.Hour).Truncate(time.Second)}

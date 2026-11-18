@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -163,5 +165,26 @@ func TestFolderSizesCountRealFilesOnly(t *testing.T) {
 	sizes := folderSizes(all, all[:2])
 	if sizes["a"].files != 2 || sizes["a"].bytes != 150 || sizes["b"].files != 1 || sizes["b"].bytes != 7 {
 		t.Fatalf("sizes %+v", sizes)
+	}
+}
+
+func TestShutdownIsNotReportedAsAnError(t *testing.T) {
+	h := newHarness(t)
+	h.sync.status = newStatusWriter()
+	work := h.drive.add("Work", "root-id", nil, true)
+	for i := range 12 {
+		h.drive.add(fmt.Sprintf("f%d.bin", i), work, []byte(fmt.Sprint("data ", i)), false)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	h.sync.drive.client.Transport = observeTransport{base: h.drive.server.Client().Transport, before: func() {
+		if strings.Contains(fmt.Sprint(h.sync.status.progressSnapshot()), "f") {
+			cancel()
+		}
+	}}
+	_ = h.sync.cycle(ctx)
+	for _, event := range readStatus(t).Recent {
+		if event.Kind == eventError {
+			t.Fatalf("stopping the sync was reported as an error: %+v", event)
+		}
 	}
 }

@@ -21,12 +21,27 @@ type Config struct {
 	Decisions       map[string]string `json:"decisions,omitempty"`
 }
 
+func accountScoped(dir string) string {
+	if accountID == "" {
+		return dir
+	}
+	return filepath.Join(dir, "accounts", accountID)
+}
+
 func configPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "drivesync", "config.json"), nil
+	return filepath.Join(accountScoped(filepath.Join(dir, "drivesync")), "config.json"), nil
+}
+
+func stateDir() (string, error) {
+	dir, err := baseStateDir()
+	if err != nil {
+		return "", err
+	}
+	return accountScoped(dir), nil
 }
 
 func loadConfig() (*Config, error) {
@@ -34,7 +49,11 @@ func loadConfig() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg := &Config{Root: filepath.Join(home, "GoogleDrive"), IntervalSeconds: 30}
+	root := filepath.Join(home, "GoogleDrive")
+	if accountID != "" {
+		root = filepath.Join(root, accountID)
+	}
+	cfg := &Config{Root: root, IntervalSeconds: 30}
 	path, err := configPath()
 	if err != nil {
 		return nil, err

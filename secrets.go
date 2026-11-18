@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -15,10 +16,22 @@ type credentials struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
-const (
-	keyringService = "drivesync"
-	keyringAccount = "credentials"
-)
+const keyringService = "drivesync"
+
+var accountID string
+
+var accountIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
+
+func keyringEntry(account string) string {
+	if account == "" {
+		return "credentials"
+	}
+	return "credentials:" + account
+}
+
+func loadStoredCredentials() (*credentials, error) {
+	return lookupCredentials(keyringEntry(accountID))
+}
 
 var errNotSignedIn = errors.New("not signed in; run: drivesync login")
 

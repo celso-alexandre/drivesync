@@ -13,8 +13,8 @@ import (
 
 const securityTool = "/usr/bin/security"
 
-func loadStoredCredentials() (*credentials, error) {
-	out, err := exec.Command(securityTool, "find-generic-password", "-s", keyringService, "-a", keyringAccount, "-w").Output()
+func lookupCredentials(entry string) (*credentials, error) {
+	out, err := exec.Command(securityTool, "find-generic-password", "-s", keyringService, "-a", entry, "-w").Output()
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -37,7 +37,7 @@ func (p *pendingSecret) commit(creds credentials) error {
 		return err
 	}
 	cmd := exec.Command(securityTool, "-i")
-	cmd.Stdin = strings.NewReader(fmt.Sprintf("add-generic-password -U -s %s -a %s -l drivesync -X %s\n", keyringService, keyringAccount, hex.EncodeToString(data)))
+	cmd.Stdin = strings.NewReader(fmt.Sprintf("add-generic-password -U -s %s -a %s -l drivesync -X %s\n", keyringService, keyringEntry(accountID), hex.EncodeToString(data)))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("saving to the Keychain: %v: %s", err, strings.TrimSpace(string(out)))
 	}
@@ -50,7 +50,7 @@ func (p *pendingSecret) commit(creds credentials) error {
 func (p *pendingSecret) abort() {}
 
 func clearCredentials() error {
-	out, err := exec.Command(securityTool, "delete-generic-password", "-s", keyringService, "-a", keyringAccount).CombinedOutput()
+	out, err := exec.Command(securityTool, "delete-generic-password", "-s", keyringService, "-a", keyringEntry(accountID)).CombinedOutput()
 	if err != nil && !strings.Contains(string(out), "could not be found") {
 		return fmt.Errorf("clearing the Keychain: %v: %s", err, strings.TrimSpace(string(out)))
 	}

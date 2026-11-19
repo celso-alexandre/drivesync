@@ -146,7 +146,6 @@ ApplicationWindow {
         "You sign in on Google's own page. drivesync never sees your password.": "Você entra na página do próprio Google. O drivesync nunca vê sua senha.",
         "Open source: anyone can check what it does.": "Código aberto: qualquer pessoa pode conferir o que ele faz.",
         "See the code": "Ver o código",
-        "Independent app, not made by Google.": "App independente, não é do Google.",
         "It takes about 5 minutes, once.": "Leva cerca de 5 minutos, uma vez só.",
         "What we'll do": "O que vamos fazer",
         "Create your credential on Google's site": "Criar sua credencial no site do Google",
@@ -1573,8 +1572,7 @@ ApplicationWindow {
                             Repeater {
                                 model: [
                                     wizard.tr("You sign in on Google's own page. drivesync never sees your password."),
-                                    wizard.tr("Open source: anyone can check what it does.") + " <a href='https://github.com/celso-alexandre/drivesync'>" + wizard.tr("See the code") + "</a>",
-                                    wizard.tr("Independent app, not made by Google.")
+                                    wizard.tr("Open source: anyone can check what it does.") + " <a href='https://github.com/celso-alexandre/drivesync'>" + wizard.tr("See the code") + "</a>"
                                 ]
                                 delegate: RowLayout {
                                     id: fact

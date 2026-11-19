@@ -40,11 +40,17 @@ jobs:
             fi
           done
           cp "dist/drivesync-$VERSION-linux-amd64/drivesync" dist/drivesync
+      - name: Vendor the desktop app's locked crates
+        run: |
+          cd gui
+          cargo vendor --locked --versioned-dirs vendor > /dev/null
+          tar -czf ../dist/gui-vendor.tar.gz vendor
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: binaries
           path: |
             dist/drivesync
+            dist/gui-vendor.tar.gz
             dist/*.tar.gz
             dist/*.zip
 
@@ -78,6 +84,7 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           chmod 755 dist/drivesync
+          tar -C gui -xzf dist/gui-vendor.tar.gz
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
           flatpak-builder --user --install-deps-from=flathub --force-clean --disable-rofiles-fuse \
             --default-branch=stable --repo=repo $GPG_ARGS build flatpak/io.github.celso_alexandre.drivesync.yml
@@ -118,8 +125,8 @@ jobs:
           flatpak install --user -y --noninteractive ./drivesync-*.flatpak
       - name: Version and sandbox self-test inside the Flatpak
         run: |
-          flatpak run io.github.celso_alexandre.drivesync version
-          flatpak run io.github.celso_alexandre.drivesync selftest-sandbox
+          flatpak run --command=drivesync io.github.celso_alexandre.drivesync version
+          flatpak run --command=drivesync io.github.celso_alexandre.drivesync selftest-sandbox
 
   publish:
     needs: [build, flatpak, flatpak-test]
@@ -141,6 +148,7 @@ jobs:
         env:
           GPG_KEY: ${{ secrets.FLATPAK_GPG_PRIVATE_KEY }}
         run: |
+          rm -f gui-vendor.tar.gz
           sha256sum *.tar.gz *.zip *.flatpak > SHA256SUMS
           if [ -n "$GPG_KEY" ]; then
             echo "$GPG_KEY" | gpg --batch --import
@@ -154,7 +162,8 @@ jobs:
           gh release create "$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$VERSION" --prerelease \
             --notes "drivesync $VERSION. Very early software: keep a backup of your Drive. Unofficial, not affiliated with Google.
 
-          Linux: use the Flatpak remote (see README) or the linux-amd64 archive. macOS and Windows: the archives below.
+          Linux: the desktop app, through the Flatpak remote (see README) or the .flatpak file below.
+          The macOS, Windows and linux-amd64 archives hold only the sync engine, for technical users; the desktop app for macOS and Windows is not ready yet.
           Verify downloads with SHA256SUMS and its signature (key: flatpak/drivesync.asc in the repo)." \
             *.tar.gz *.zip *.flatpak SHA256SUMS $(ls SHA256SUMS.asc 2>/dev/null)
       - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

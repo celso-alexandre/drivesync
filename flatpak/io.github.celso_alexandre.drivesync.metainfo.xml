@@ -26,4 +26,11 @@
     <binary>drivesync</binary>
   </provides>
   <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.2.0" date="2026-11-18">
+      <description>
+        <p>Desktop app with a tray icon, a setup wizard, several Google accounts and parallel transfers. English and Brazilian Portuguese.</p>
+      </description>
+    </release>
+  </releases>
 </component>

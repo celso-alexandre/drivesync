@@ -46,3 +46,20 @@ jobs:
         run: CGO_ENABLED=0 go build -trimpath -o dist/ .
       - name: Sandbox self-test
         run: dist/drivesync selftest-sandbox
+
+  gui:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: KDE SDK with the Rust extension
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive flathub org.kde.Sdk//6.11 org.freedesktop.Sdk.Extension.rust-stable//25.08
+      - name: Vendor the locked crates
+        run: scripts/gui.sh vendor
+      - name: Clippy and tests, offline in the SDK sandbox
+        run: scripts/gui.sh check

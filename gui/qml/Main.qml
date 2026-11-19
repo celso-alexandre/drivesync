@@ -141,20 +141,22 @@ ApplicationWindow {
         "Start syncing": "Começar a sincronizar",
         "Loading your folders…": "Carregando suas pastas…",
         "Set up drivesync": "Configurar o drivesync",
-        "Let's connect your Google Drive": "Vamos conectar seu Google Drive",
-        "drivesync doesn't borrow a key from anyone. You'll make your own free Google key, so only you can reach your files. Each step opens the right page and tells you exactly what to click.": "O drivesync não pega emprestada a chave de ninguém. Você vai criar sua própria chave gratuita do Google, para que só você acesse seus arquivos. Cada passo abre a página certa e diz exatamente onde clicar.",
-        "About 5 minutes": "Cerca de 5 minutos",
-        "Only once": "Só uma vez",
-        "Free, no card needed": "Grátis, sem cartão",
+        "Connect to Google Drive": "Conectar ao Google Drive",
+        "Google requires every app that opens your Drive to have an access credential. drivesync has no servers and no credential of its own, so you create one on Google's site. It stays with you, and you can revoke it at any time.": "O Google pede que todo app que acessa o Drive tenha uma credencial de acesso. O drivesync não tem servidores nem credencial própria, então você cria a sua no site do Google. Ela fica só com você, e você pode revogá-la quando quiser.",
+        "You sign in on Google's own page. drivesync never sees your password.": "Você entra na página do próprio Google. O drivesync nunca vê sua senha.",
+        "Open source: anyone can check what it does.": "Código aberto: qualquer pessoa pode conferir o que ele faz.",
+        "See the code": "Ver o código",
+        "Independent app, not made by Google.": "App independente, não é do Google.",
+        "It takes about 5 minutes, once.": "Leva cerca de 5 minutos, uma vez só.",
         "What we'll do": "O que vamos fazer",
-        "Create your key on Google's website": "Criar sua chave no site do Google",
+        "Create your credential on Google's site": "Criar sua credencial no site do Google",
         "Paste it here": "Colar aqui",
         "Sign in and choose your folders": "Entrar e escolher suas pastas",
         "Later": "Depois",
         "Get started": "Começar",
         "Step %1 of %2": "Passo %1 de %2",
-        "Create your key": "Criar sua chave",
-        "Paste your key": "Colar sua chave",
+        "Create your credential": "Criar sua credencial",
+        "Paste your credential": "Colar sua credencial",
         "Sign in": "Entrar",
         "Back": "Voltar",
         "Next": "Próximo",
@@ -190,7 +192,7 @@ ApplicationWindow {
         "A Client ID ends with .apps.googleusercontent.com. Copy it again from Google.": "O ID do cliente termina com .apps.googleusercontent.com. Copie de novo no Google.",
         "This looks like the Client ID again. The secret is the line below it in Google's window and starts with <b>GOCSPX-</b>.": "Isso parece o ID do cliente de novo. A chave secreta é a linha de baixo na janela do Google e começa com <b>GOCSPX-</b>.",
         "A Client secret starts with <b>GOCSPX-</b>. Copy it again from Google.": "A chave secreta começa com <b>GOCSPX-</b>. Copie de novo no Google.",
-        "Show secret": "Mostrar chave",
+        "Show secret": "Mostrar chave secreta",
         "These are stored in your system's password storage, never in a file. Closed Google's window already? Open it again from <a href='https://console.cloud.google.com/auth/clients'>your clients list</a>.": "Elas ficam guardadas no cofre de senhas do sistema, nunca em arquivo. Já fechou a janela do Google? Abra de novo pela <a href='https://console.cloud.google.com/auth/clients'>sua lista de clientes</a>.",
         "Finish in your browser": "Termine no navegador",
         "Waiting for you…": "Esperando você…",
@@ -222,7 +224,7 @@ ApplicationWindow {
         "Remove": "Remover",
         "drivesync stops syncing this account and forgets its sign-in. Its files stay on this computer in %1.": "O drivesync para de sincronizar esta conta e esquece o login dela. Os arquivos ficam neste computador em %1.",
         "Add another Google account": "Adicionar outra conta do Google",
-        "Your key from the first setup works for every account, so this takes one step: sign in with the other account and allow drivesync.": "Sua chave da primeira configuração serve para todas as contas, então é um passo só: entre com a outra conta e permita o drivesync.",
+        "Your credential from the first setup works for every account, so this takes one step: sign in with the other account and allow drivesync.": "Sua credencial da primeira configuração serve para todas as contas, então é um passo só: entre com a outra conta e permita o drivesync.",
         "In the browser, choose <b>Use another account</b> and sign in with it.": "No navegador, escolha <b>Usar outra conta</b> e entre com ela.",
         "Google warns that the app isn't verified, just like the first time. Click <b>Continue</b>, then allow access to Drive.": "O Google avisa que o app não foi verificado, como na primeira vez. Clique em <b>Continuar</b> e permita o acesso ao Drive.",
         "Pick its folders. They go into <b>GoogleDrive / its email</b>.": "Escolha as pastas dela. Elas vão para <b>GoogleDrive / e-mail da conta</b>.",
@@ -1085,7 +1087,7 @@ ApplicationWindow {
                     spacing: 16
                     Item { Layout.preferredHeight: 14 }
                     Label { text: window.tr("Add another Google account"); font.pointSize: Qt.application.font.pointSize * 1.6; font.weight: Font.DemiBold; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.leftMargin: 28; Layout.rightMargin: 28 }
-                    Label { text: window.tr("Your key from the first setup works for every account, so this takes one step: sign in with the other account and allow drivesync."); color: window.muted; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.leftMargin: 28; Layout.rightMargin: 28 }
+                    Label { text: window.tr("Your credential from the first setup works for every account, so this takes one step: sign in with the other account and allow drivesync."); color: window.muted; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.leftMargin: 28; Layout.rightMargin: 28 }
                     ColumnLayout {
                         Layout.fillWidth: true
                         Layout.leftMargin: 28
@@ -1431,7 +1433,7 @@ ApplicationWindow {
             { title: window.tr("Publish it, just for you"), link: "https://console.cloud.google.com/auth/audience",
               lines: [window.tr("Click <b>Publish app</b>, then <b>Confirm</b>."), window.tr("This only stops Google from signing you out every week. Nobody else can use your app, and Google doesn't need to review it."), window.tr("Come back here and click <b>Next</b>.")],
               hint: window.tr("Says <b>In production</b> already? Then just click Next.") },
-            { title: window.tr("Create your key"), link: "https://console.cloud.google.com/auth/clients/create",
+            { title: window.tr("Create your credential"), link: "https://console.cloud.google.com/auth/clients/create",
               lines: [window.tr("Application type: choose <b>Desktop app</b>. Name: <b>drivesync</b>."), window.tr("Click <b>Create</b>. Google shows your <b>Client ID</b> and <b>Client secret</b>."), window.tr("Keep that window open and click <b>Next</b> here.")],
               hint: "" },
             {},
@@ -1439,8 +1441,8 @@ ApplicationWindow {
         ]
 
         function groupName() {
-            if (step <= 5) return tr("Create your key")
-            if (step === 6) return tr("Paste your key")
+            if (step <= 5) return tr("Create your credential")
+            if (step === 6) return tr("Paste your credential")
             return tr("Sign in")
         }
 
@@ -1563,23 +1565,30 @@ ApplicationWindow {
                             color: Qt.alpha(palette.highlight, 0.16)
                             Image { anchors.centerIn: parent; source: window.iconBase + "drivesync.svg"; sourceSize.width: 64; sourceSize.height: 64 }
                         }
-                        Label { text: wizard.tr("Let's connect your Google Drive"); font.pointSize: Qt.application.font.pointSize * 1.75; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                        Label { text: wizard.tr("drivesync doesn't borrow a key from anyone. You'll make your own free Google key, so only you can reach your files. Each step opens the right page and tells you exactly what to click."); color: window.muted; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; lineHeight: 1.2; Layout.fillWidth: true }
-                        Flow {
-                            Layout.alignment: Qt.AlignHCenter
-                            Layout.maximumWidth: 440
-                            spacing: 8
+                        Label { text: wizard.tr("Connect to Google Drive"); font.pointSize: Qt.application.font.pointSize * 1.75; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                        Label { text: wizard.tr("Google requires every app that opens your Drive to have an access credential. drivesync has no servers and no credential of its own, so you create one on Google's site. It stays with you, and you can revoke it at any time."); color: window.muted; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap; lineHeight: 1.2; Layout.fillWidth: true }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 10
                             Repeater {
-                                model: [wizard.tr("About 5 minutes"), wizard.tr("Only once"), wizard.tr("Free, no card needed")]
-                                Rectangle {
-                                    id: chip
+                                model: [
+                                    wizard.tr("You sign in on Google's own page. drivesync never sees your password."),
+                                    wizard.tr("Open source: anyone can check what it does.") + " <a href='https://github.com/celso-alexandre/drivesync'>" + wizard.tr("See the code") + "</a>",
+                                    wizard.tr("Independent app, not made by Google.")
+                                ]
+                                delegate: RowLayout {
+                                    id: fact
                                     required property string modelData
-                                    width: chipLabel.implicitWidth + 24
-                                    height: 30
-                                    radius: 15
-                                    color: window.surface
-                                    border.color: window.line
-                                    Label { id: chipLabel; anchors.centerIn: parent; text: chip.modelData; font.pointSize: Qt.application.font.pointSize * 0.9 }
+                                    spacing: 10
+                                    Layout.fillWidth: true
+                                    Label { text: "✓"; color: window.good; font.weight: Font.DemiBold; Layout.alignment: Qt.AlignTop }
+                                    Label {
+                                        text: fact.modelData
+                                        textFormat: Text.StyledText
+                                        wrapMode: Text.Wrap
+                                        Layout.fillWidth: true
+                                        onLinkActivated: (link) => Qt.openUrlExternally(link)
+                                    }
                                 }
                             }
                         }
@@ -1592,11 +1601,12 @@ ApplicationWindow {
                                 anchors.margins: 14
                                 spacing: 8
                                 SectionLabel { text: wizard.tr("What we'll do") }
-                                Label { text: "<b>1–5</b>&nbsp;&nbsp;" + wizard.tr("Create your key on Google's website"); textFormat: Text.StyledText; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                                Label { text: "<b>1–5</b>&nbsp;&nbsp;" + wizard.tr("Create your credential on Google's site"); textFormat: Text.StyledText; wrapMode: Text.Wrap; Layout.fillWidth: true }
                                 Label { text: "<b>6</b>&nbsp;&nbsp;" + wizard.tr("Paste it here"); textFormat: Text.StyledText; Layout.fillWidth: true }
                                 Label { text: "<b>7</b>&nbsp;&nbsp;" + wizard.tr("Sign in and choose your folders"); textFormat: Text.StyledText; Layout.fillWidth: true }
                             }
                         }
+                        Label { text: wizard.tr("It takes about 5 minutes, once."); color: window.muted; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
                     }
 
                     ColumnLayout {
@@ -1632,7 +1642,7 @@ ApplicationWindow {
                         Layout.margins: 28
                         Layout.topMargin: 22
                         spacing: 10
-                        Label { text: wizard.tr("Paste your key"); font.pointSize: Qt.application.font.pointSize * 1.6; font.weight: Font.DemiBold }
+                        Label { text: wizard.tr("Paste your credential"); font.pointSize: Qt.application.font.pointSize * 1.6; font.weight: Font.DemiBold }
                         Label { text: wizard.tr("Google shows a window called <b>OAuth client created</b>. Copy each value with the copy icon next to it, then press Paste here."); textFormat: Text.StyledText; color: window.muted; wrapMode: Text.Wrap; Layout.fillWidth: true }
                         Label { text: wizard.tr("Client ID"); font.weight: Font.DemiBold; Layout.topMargin: 8 }
                         RowLayout {

@@ -991,9 +991,15 @@ ApplicationWindow {
                             ItemDelegate {
                                 Layout.fillWidth: true
                                 icon.name: "list-add"
-                                text: window.tr("Add another account")
-                                enabled: window.accounts.length > 0
-                                onClicked: addAccount.begin()
+                                text: window.accounts.length > 0 ? window.tr("Add another account") : window.tr("Connect Google account")
+                                onClicked: {
+                                    if (window.accounts.length > 0) {
+                                        addAccount.begin()
+                                    } else {
+                                        accountsWindow.close()
+                                        wizard.begin()
+                                    }
+                                }
                             }
                         }
                     }

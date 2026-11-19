@@ -304,7 +304,10 @@ impl qobject::Backend {
                     eprintln!("drivesync-gui: {err}");
                 }
             }
-            let _ = handle.queue(move |mut backend| backend.as_mut().set_start_at_login(login));
+            let _ = handle.queue(move |mut backend| {
+                backend.as_mut().set_start_at_login(login);
+                backend.as_mut().set_loaded(true);
+            });
             watch(handle, shared);
         });
     }

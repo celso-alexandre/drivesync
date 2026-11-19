@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -33,8 +33,6 @@ pub struct Status {
     #[serde(default)]
     pub message: String,
     #[serde(default)]
-    pub account: String,
-    #[serde(default)]
     pub last_sync: String,
     #[serde(default)]
     pub progress: Option<serde_json::Value>,
@@ -43,8 +41,6 @@ pub struct Status {
     #[serde(default)]
     pub recent: Vec<Event>,
 }
-
-static PATHS: OnceLock<Paths> = OnceLock::new();
 
 pub fn binary() -> PathBuf {
     let name = if cfg!(windows) { "drivesync.exe" } else { "drivesync" };
@@ -116,16 +112,26 @@ pub fn run_streaming(args: &[&str], input: &str, slot: &Mutex<Option<Child>>, mu
     }
 }
 
-pub fn paths() -> Result<&'static Paths, String> {
-    if let Some(paths) = PATHS.get() {
-        return Ok(paths);
+pub fn scoped<'a>(account: &'a str, args: &[&'a str]) -> Vec<&'a str> {
+    let mut all = Vec::with_capacity(args.len() + 2);
+    if !account.is_empty() {
+        all.push("--account");
+        all.push(account);
     }
-    let output = run(&["paths"])?;
+    all.extend_from_slice(args);
+    all
+}
+
+pub fn paths(account: &str) -> Result<Paths, String> {
+    let output = run(&scoped(account, &["paths"]))?;
     if !output.ok {
         return Err(output.stderr.trim().trim_start_matches("drivesync: ").to_string());
     }
-    let parsed: Paths = serde_json::from_str(output.stdout.trim()).map_err(|err| format!("unexpected answer from the engine: {err}"))?;
-    Ok(PATHS.get_or_init(|| parsed))
+    serde_json::from_str(output.stdout.trim()).map_err(|err| format!("unexpected answer from the engine: {err}"))
+}
+
+pub fn message(output: &Output) -> String {
+    output.stderr.trim().trim_start_matches("drivesync: ").to_string()
 }
 
 pub fn read_status(paths: &Paths) -> Option<Status> {
@@ -134,6 +140,7 @@ pub fn read_status(paths: &Paths) -> Option<Status> {
 }
 
 pub struct Supervisor {
+    account: String,
     child: Mutex<Option<Child>>,
     stopping: AtomicBool,
     allowed: AtomicBool,
@@ -141,8 +148,9 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
-    pub fn new() -> Arc<Self> {
+    pub fn new(account: &str) -> Arc<Self> {
         Arc::new(Self {
+            account: account.to_string(),
             child: Mutex::new(None),
             stopping: AtomicBool::new(false),
             allowed: AtomicBool::new(true),
@@ -163,7 +171,7 @@ impl Supervisor {
                 continue;
             }
             self.kick.store(false, Ordering::SeqCst);
-            let spawned = Command::new(binary()).arg("run").stdin(Stdio::null()).stdout(Stdio::null()).spawn();
+            let spawned = Command::new(binary()).args(scoped(&self.account, &["run"])).stdin(Stdio::null()).stdout(Stdio::null()).spawn();
             match spawned {
                 Ok(child) => {
                     *self.lock_child() = Some(child);
@@ -217,12 +225,6 @@ impl Supervisor {
 
     pub fn hold(&self) {
         self.allowed.store(false, Ordering::SeqCst);
-    }
-
-    pub fn restart(&self) {
-        self.allowed.store(true, Ordering::SeqCst);
-        self.kick.store(true, Ordering::SeqCst);
-        self.kill_child();
     }
 
     pub fn stop(&self) {

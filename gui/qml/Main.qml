@@ -12,14 +12,25 @@ ApplicationWindow {
     property bool startHidden: false
     readonly property string iconBase: "qrc:/qt/qml/drivesync/icons/"
 
-    readonly property var recent: parseJson(backend.recentJson, [])
-    readonly property var progress: parseJson(backend.progressJson, null)
-    readonly property var questions: parseJson(backend.attentionJson, [])
-    readonly property var selectedFolders: parseJson(backend.selectedJson, [])
-    readonly property var conflicts: recent.filter(e => e.kind === "conflict" && prefs.dismissed.indexOf(e.time) < 0).slice(0, 3)
-    readonly property bool hasError: backend.syncState === "error" || backend.syncState === "engine_missing"
-    readonly property int attentionCount: questions.length + conflicts.length + (hasError ? 1 : 0)
-    readonly property bool signedOut: backend.syncState === "signed_out"
+    readonly property var accounts: parseJson(backend.accountsJson, [])
+    readonly property bool multiple: accounts.length > 1
+    readonly property var recent: accounts.reduce((all, a) => all.concat(a.recent.map(e => Object.assign({ account: a.id, email: a.email, root: a.root }, e))), []).sort((x, y) => x.time < y.time ? 1 : x.time > y.time ? -1 : 0).slice(0, 30)
+    readonly property var progress: combineProgress()
+    readonly property var questions: accounts.reduce((all, a) => all.concat(a.attention.map(q => Object.assign({ account: a.id, email: a.email }, q))), [])
+    readonly property var conflicts: recent.filter(e => e.kind === "conflict" && prefs.dismissed.indexOf(e.email + e.time) < 0).slice(0, 3)
+    readonly property var failing: accounts.filter(a => a.state === "error")
+    readonly property var syncingAccounts: accounts.filter(a => a.state === "syncing" || a.state === "starting")
+    readonly property bool allPaused: accounts.length > 0 && accounts.every(a => a.paused)
+    readonly property bool needsFolders: accounts.length > 0 && accounts.every(a => a.selected.length === 0)
+    readonly property bool hasError: failing.length > 0 || backend.engineError !== ""
+    readonly property int attentionCount: questions.length + conflicts.length + failing.length + (backend.engineError !== "" ? 1 : 0)
+    readonly property bool signedOut: backend.loaded && accounts.length === 0 && backend.engineError === ""
+    readonly property string overall: !backend.loaded ? "starting" : backend.engineError !== "" ? "engine_missing" : accounts.length === 0 ? "signed_out" : syncingAccounts.length > 0 ? "syncing" : allPaused ? "paused" : needsFolders ? "no_folders" : failing.length > 0 ? "error" : "idle"
+    readonly property string message: backend.engineError !== "" ? backend.engineError : failing.length > 0 ? failing[0].message : syncingAccounts.length > 0 ? syncingAccounts[0].message : ""
+    readonly property string lastSync: accounts.map(a => a.last_sync).filter(t => !!t).sort().slice(-1)[0] || ""
+    readonly property int folderCount: accounts.reduce((n, a) => n + a.selected.length, 0)
+    readonly property string driveRoot: accounts.length === 1 ? accounts[0].root : accounts.length > 1 ? parentOf(accounts[0].root) : ""
+    readonly property var selectedFolders: accounts.length === 1 ? accounts[0].selected : []
 
     readonly property string lang: prefs.language === "pt-BR" || (prefs.language !== "en-US" && Qt.locale().name.indexOf("pt") === 0) ? "pt-BR" : "en-US"
     readonly property color muted: Qt.alpha(palette.windowText, 0.68)
@@ -193,7 +204,35 @@ ApplicationWindow {
         "Show details": "Mostrar detalhes",
         "Hide details": "Ocultar detalhes",
         "just now": "agora mesmo",
-        "%1 min ago": "há %1 min"
+        "%1 min ago": "há %1 min",
+        "Syncing %1 of %2 accounts": "Sincronizando %1 de %2 contas",
+        "Pause all": "Pausar tudo",
+        "Resume all": "Retomar tudo",
+        "Accounts": "Contas",
+        "Your Google accounts": "Suas contas do Google",
+        "Each account syncs into its own folder inside GoogleDrive.": "Cada conta sincroniza em uma pasta própria dentro de GoogleDrive.",
+        "Add another account": "Adicionar outra conta",
+        "Folders…": "Pastas…",
+        "More options for %1": "Mais opções para %1",
+        "Open its folder": "Abrir a pasta",
+        "Pause this account": "Pausar esta conta",
+        "Resume this account": "Retomar esta conta",
+        "Remove account…": "Remover conta…",
+        "Remove %1?": "Remover %1?",
+        "Remove": "Remover",
+        "drivesync stops syncing this account and forgets its sign-in. Its files stay on this computer in %1.": "O drivesync para de sincronizar esta conta e esquece o login dela. Os arquivos ficam neste computador em %1.",
+        "Add another Google account": "Adicionar outra conta do Google",
+        "Your key from the first setup works for every account, so this takes one step: sign in with the other account and allow drivesync.": "Sua chave da primeira configuração serve para todas as contas, então é um passo só: entre com a outra conta e permita o drivesync.",
+        "In the browser, choose <b>Use another account</b> and sign in with it.": "No navegador, escolha <b>Usar outra conta</b> e entre com ela.",
+        "Google warns that the app isn't verified, just like the first time. Click <b>Continue</b>, then allow access to Drive.": "O Google avisa que o app não foi verificado, como na primeira vez. Clique em <b>Continuar</b> e permita o acesso ao Drive.",
+        "Pick its folders. They go into <b>GoogleDrive / its email</b>.": "Escolha as pastas dela. Elas vão para <b>GoogleDrive / e-mail da conta</b>.",
+        "Is this account in a company or school? Its administrator may block apps that aren't approved. If sign-in is refused, ask them to allow drivesync, or set it up with that account's own key.": "Esta conta é de empresa ou escola? O administrador pode bloquear apps não aprovados. Se o login for recusado, peça para liberarem o drivesync.",
+        "Sign in with Google": "Entrar com o Google",
+        "Couldn't add the account": "Não foi possível adicionar a conta",
+        "Choose folders for %1": "Escolher pastas de %1",
+        "Not signed in": "Sem login",
+        "%1 of %2 files": "%1 de %2 arquivos",
+        "Up to date · checked %1": "Em dia · verificado %1"
     })
 
     function tr(text, a, b, c) {
@@ -263,36 +302,69 @@ ApplicationWindow {
         return p.slice(0, Math.max(0, p.lastIndexOf("/")))
     }
 
+    function combineProgress() {
+        const list = accounts.filter(a => !!a.progress)
+        if (list.length === 0) return null
+        const total = { files: 0, files_done: 0, bytes: 0, bytes_done: 0, active: [] }
+        for (const a of list) {
+            total.files += a.progress.files
+            total.files_done += a.progress.files_done
+            total.bytes += a.progress.bytes
+            total.bytes_done += a.progress.bytes_done
+            for (const t of (a.progress.active || []))
+                total.active.push(Object.assign({ email: a.email }, t))
+        }
+        return total
+    }
+
+    function accountLine(a) {
+        if (a.state === "signed_out") return tr("Not signed in")
+        if (a.paused) return tr("Paused")
+        if (a.state === "error") return a.message
+        if (a.progress) return tr("%1 of %2 files", count(a.progress.files_done), count(a.progress.files))
+        if (a.state === "syncing" || a.state === "starting") return tr("Checking for changes")
+        if (a.selected.length === 0) return tr("Choose folders to sync")
+        return tr("Up to date · checked %1", ago(a.last_sync))
+    }
+
+    function chooseFolders() {
+        if (multiple)
+            accountsWindow.open()
+        else if (accounts.length === 1)
+            folders.showPicker(accounts[0].id)
+    }
+
     function headline() {
         if (signedOut) return tr("Not connected to Google")
-        if (backend.syncState === "engine_missing") return tr("The sync engine is missing")
+        if (window.overall === "engine_missing") return tr("The sync engine is missing")
         if (attentionCount === 1) return tr("1 thing needs you")
         if (attentionCount > 1) return tr("%1 things need you", attentionCount)
-        if (backend.syncState === "starting") return tr("Starting…")
-        if (backend.syncState === "paused") return tr("Paused")
-        if (backend.syncState === "no_folders") return tr("Choose folders to sync")
-        if (backend.syncState === "syncing") return progress ? tr("Syncing your files") : tr("Checking for changes")
+        if (window.overall === "starting") return tr("Starting…")
+        if (window.overall === "paused") return tr("Paused")
+        if (window.overall === "no_folders") return tr("Choose folders to sync")
+        if (multiple && overall === "syncing") return tr("Syncing %1 of %2 accounts", syncingAccounts.length, accounts.length)
+        if (overall === "syncing") return progress ? tr("Syncing your files") : tr("Checking for changes")
         return tr("Everything is up to date")
     }
 
     function subline() {
         if (signedOut) return tr("Connect your Google account to start.")
         if (attentionCount > 0) return tr("Everything else is up to date")
-        if (backend.syncState === "paused") return tr("Nothing is copied until you resume.")
-        if (backend.syncState === "no_folders") return tr("Pick which Drive folders to keep on this computer.")
-        if (backend.syncState === "syncing" && progress)
+        if (window.overall === "paused") return tr("Nothing is copied until you resume.")
+        if (window.overall === "no_folders") return tr("Pick which Drive folders to keep on this computer.")
+        if (window.overall === "syncing" && progress)
             return tr("%1 of %2 files · %3 left", count(progress.files_done), count(progress.files), bytes(Math.max(0, progress.bytes - progress.bytes_done)))
-        if (backend.syncState === "syncing") return backend.message ? tr(backend.message) + "…" : ""
-        if (backend.lastSync)
-            return selectedFolders.length === 1 ? tr("Last checked %1 · 1 folder", ago(backend.lastSync)) : tr("Last checked %1 · %2 folders", ago(backend.lastSync), selectedFolders.length)
+        if (overall === "syncing") return message ? tr(message) + "…" : ""
+        if (lastSync)
+            return folderCount === 1 ? tr("Last checked %1 · 1 folder", ago(lastSync)) : tr("Last checked %1 · %2 folders", ago(lastSync), folderCount)
         return ""
     }
 
     function stateIcon() {
         if (signedOut) return iconBase + "tray-offline.svg"
         if (attentionCount > 0) return iconBase + "tray-error.svg"
-        if (backend.syncState === "paused") return iconBase + "tray-paused.svg"
-        if (backend.syncState === "syncing" || backend.syncState === "starting") return iconBase + "tray-syncing.svg"
+        if (window.overall === "paused") return iconBase + "tray-paused.svg"
+        if (window.overall === "syncing" || window.overall === "starting") return iconBase + "tray-syncing.svg"
         return iconBase + "tray-idle.svg"
     }
 
@@ -319,8 +391,12 @@ ApplicationWindow {
     }
 
     function openFolder(relative) {
-        if (!backend.root) return
-        Qt.openUrlExternally("file://" + backend.root + (relative ? "/" + relative : ""))
+        openIn(driveRoot, relative)
+    }
+
+    function openIn(root, relative) {
+        if (!root) return
+        Qt.openUrlExternally("file://" + root + (relative ? "/" + relative : ""))
     }
 
     function showWindow() {
@@ -388,11 +464,12 @@ ApplicationWindow {
     Backend {
         id: backend
         onAlert: (title, body) => tray.showMessage(window.tr(title), body, Platform.SystemTrayIcon.Information, 8000)
-        onSignedIn: {
+        onSignedIn: (account) => {
             wizard.close()
-            folders.showPicker()
+            addAccount.close()
+            folders.showPicker(account)
         }
-        onSyncStateChanged: {
+        onLoadedChanged: {
             if (window.signedOut && !window.startHidden && !wizard.visible)
                 wizard.begin()
         }
@@ -415,12 +492,12 @@ ApplicationWindow {
         menu: Platform.Menu {
             Platform.MenuItem { text: window.headline(); enabled: false }
             Platform.MenuSeparator {}
-            Platform.MenuItem { text: window.tr("Open GoogleDrive folder"); enabled: backend.root !== "" && !window.signedOut; onTriggered: window.openFolder("") }
-            Platform.MenuItem { text: window.tr("Sync now"); enabled: !window.signedOut && !backend.paused; onTriggered: backend.syncNow() }
-            Platform.MenuItem { text: backend.paused ? window.tr("Resume syncing") : window.tr("Pause syncing"); enabled: !window.signedOut; onTriggered: backend.setSyncPaused(!backend.paused) }
+            Platform.MenuItem { text: window.tr("Open GoogleDrive folder"); enabled: window.driveRoot !== "" && !window.signedOut; onTriggered: window.openFolder("") }
+            Platform.MenuItem { text: window.tr("Sync now"); enabled: !window.signedOut && !window.allPaused; onTriggered: backend.syncNow("") }
+            Platform.MenuItem { text: window.allPaused ? window.tr("Resume syncing") : window.tr("Pause syncing"); enabled: !window.signedOut; onTriggered: backend.setSyncPaused("", !window.allPaused) }
             Platform.MenuSeparator {}
             Platform.MenuItem { text: window.tr("Show activity"); onTriggered: window.showWindow() }
-            Platform.MenuItem { text: window.signedOut ? window.tr("Connect Google account") : window.tr("Choose folders…"); onTriggered: window.signedOut ? wizard.begin() : folders.showPicker() }
+            Platform.MenuItem { text: window.signedOut ? window.tr("Connect Google account") : window.tr("Choose folders…"); onTriggered: window.signedOut ? wizard.begin() : window.chooseFolders() }
             Platform.MenuSeparator {}
             Platform.MenuItem { text: window.tr("Quit drivesync"); onTriggered: window.quitApp() }
         }
@@ -497,7 +574,7 @@ ApplicationWindow {
         }
 
         ColumnLayout {
-            visible: backend.syncState === "syncing" && window.attentionCount === 0
+            visible: window.overall === "syncing" && window.attentionCount === 0
             spacing: 6
             Layout.fillWidth: true
             Layout.leftMargin: 22
@@ -527,24 +604,24 @@ ApplicationWindow {
             Layout.bottomMargin: 0
             Layout.topMargin: 16
             Button {
-                visible: !window.signedOut && backend.syncState !== "no_folders"
+                visible: !window.signedOut && window.overall !== "no_folders"
                 text: window.tr("Open GoogleDrive folder")
                 icon.name: "folder-open"
                 highlighted: true
                 onClicked: window.openFolder("")
             }
             Button {
-                visible: !window.signedOut && backend.syncState !== "no_folders" && backend.syncState !== "syncing"
+                visible: !window.signedOut && window.overall !== "no_folders" && window.overall !== "syncing"
                 text: window.tr("Sync now")
                 icon.name: "view-refresh"
-                enabled: !backend.paused
-                onClicked: backend.syncNow()
+                enabled: !window.allPaused
+                onClicked: backend.syncNow("")
             }
             Button {
-                visible: !window.signedOut && backend.syncState !== "no_folders"
-                text: backend.paused ? window.tr("Resume") : window.tr("Pause")
-                icon.name: backend.paused ? "media-playback-start" : "media-playback-pause"
-                onClicked: backend.setSyncPaused(!backend.paused)
+                visible: !window.signedOut && window.overall !== "no_folders"
+                text: window.allPaused ? (window.multiple ? window.tr("Resume all") : window.tr("Resume")) : (window.multiple ? window.tr("Pause all") : window.tr("Pause"))
+                icon.name: window.allPaused ? "media-playback-start" : "media-playback-pause"
+                onClicked: backend.setSyncPaused("", !window.allPaused)
             }
             Button {
                 visible: window.signedOut
@@ -553,10 +630,10 @@ ApplicationWindow {
                 onClicked: wizard.begin()
             }
             Button {
-                visible: backend.syncState === "no_folders"
+                visible: window.overall === "no_folders"
                 text: window.tr("Choose folders…")
                 highlighted: true
-                onClicked: folders.showPicker()
+                onClicked: window.chooseFolders()
             }
         }
 
@@ -581,8 +658,8 @@ ApplicationWindow {
                         urgent: true
                         heading: window.tr("Delete %1 files from %2?", window.count(modelData.count), modelData.folder)
                         body: window.tr("They were removed from this computer. That's more than half of the folder, so drivesync stopped to check with you first.")
-                        Button { text: window.tr("Keep them on Drive"); highlighted: true; onClicked: backend.answer(modelData.id, "keep") }
-                        Button { text: window.tr("Yes, move to Drive trash"); onClicked: backend.answer(modelData.id, "delete") }
+                        Button { text: window.tr("Keep them on Drive"); highlighted: true; onClicked: backend.answer(modelData.account, modelData.id, "keep") }
+                        Button { text: window.tr("Yes, move to Drive trash"); onClicked: backend.answer(modelData.account, modelData.id, "delete") }
                     }
                 }
 
@@ -595,8 +672,8 @@ ApplicationWindow {
                         Layout.rightMargin: 14
                         heading: window.tr("%1 changed in two places", window.baseName(modelData.path))
                         body: window.tr("Nothing was lost. The Drive version kept the name, and yours was saved next to it with \"conflict\" in its name.")
-                        Button { text: window.tr("Show both files"); onClicked: window.openFolder(window.parentOf(modelData.path)) }
-                        Button { text: window.tr("Got it"); flat: true; onClicked: window.dismissConflict(modelData.time) }
+                        Button { text: window.tr("Show both files"); onClicked: window.openIn(modelData.root, window.parentOf(modelData.path)) }
+                        Button { text: window.tr("Got it"); flat: true; onClicked: window.dismissConflict(modelData.email + modelData.time) }
                     }
                 }
 
@@ -607,7 +684,72 @@ ApplicationWindow {
                     Layout.rightMargin: 14
                     urgent: true
                     heading: window.tr("Something went wrong")
-                    body: (backend.message ? backend.message + "\n" : "") + window.tr("drivesync will try again in a moment.")
+                    body: (window.message ? window.message + "\n" : "") + window.tr("drivesync will try again in a moment.")
+                }
+
+                Repeater {
+                    model: window.multiple ? window.accounts : []
+                    delegate: Card {
+                        id: accountCard
+                        required property var modelData
+                        required property int index
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 14
+                        Layout.rightMargin: 14
+                        implicitHeight: cardColumn.implicitHeight + 20
+                        ColumnLayout {
+                            id: cardColumn
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            anchors.margins: 12
+                            spacing: 10
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 12
+                                Avatar { email: accountCard.modelData.email; index: accountCard.index }
+                                ColumnLayout {
+                                    spacing: 1
+                                    Layout.fillWidth: true
+                                    Label { text: accountCard.modelData.email; font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }
+                                    Label { text: window.accountLine(accountCard.modelData); color: window.muted; elide: Text.ElideRight; font.pointSize: Qt.application.font.pointSize * 0.9; Layout.fillWidth: true }
+                                }
+                                ToolButton {
+                                    icon.name: accountCard.modelData.paused ? "media-playback-start" : "media-playback-pause"
+                                    display: AbstractButton.IconOnly
+                                    text: accountCard.modelData.paused ? window.tr("Resume this account") : window.tr("Pause this account")
+                                    Accessible.name: text
+                                    ToolTip.visible: hovered
+                                    ToolTip.text: text
+                                    onClicked: backend.setSyncPaused(accountCard.modelData.id, !accountCard.modelData.paused)
+                                }
+                            }
+                            ProgressBar {
+                                visible: !!accountCard.modelData.progress
+                                Layout.fillWidth: true
+                                value: accountCard.modelData.progress && accountCard.modelData.progress.bytes > 0 ? accountCard.modelData.progress.bytes_done / accountCard.modelData.progress.bytes : 0
+                            }
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Repeater {
+                                    model: accountCard.modelData.selected
+                                    delegate: Button {
+                                        required property string modelData
+                                        text: modelData
+                                        flat: true
+                                        font.pointSize: Qt.application.font.pointSize * 0.9
+                                        onClicked: window.openIn(accountCard.modelData.root, modelData)
+                                    }
+                                }
+                                Button {
+                                    visible: accountCard.modelData.selected.length === 0
+                                    text: window.tr("Choose folders…")
+                                    onClicked: folders.showPicker(accountCard.modelData.id)
+                                }
+                            }
+                        }
+                    }
                 }
 
                 ColumnLayout {
@@ -679,7 +821,7 @@ ApplicationWindow {
                                         anchors.right: parent.right
                                         anchors.rightMargin: 12
                                         anchors.verticalCenter: parent.verticalCenter
-                                        source: backend.syncState === "idle" ? window.iconBase + "tray-idle.svg" : window.iconBase + "tray-syncing.svg"
+                                        source: window.overall === "idle" ? window.iconBase + "tray-idle.svg" : window.iconBase + "tray-syncing.svg"
                                         sourceSize.width: 18
                                         sourceSize.height: 18
                                     }
@@ -703,7 +845,7 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             Layout.leftMargin: 8
                             Layout.rightMargin: 8
-                            onClicked: if (modelData.path) window.openFolder(window.parentOf(modelData.path))
+                            onClicked: if (modelData.path) window.openIn(modelData.root, window.parentOf(modelData.path))
                             contentItem: RowLayout {
                                 spacing: 12
                                 Rectangle { Layout.preferredWidth: 8; Layout.preferredHeight: 8; radius: 4; color: window.eventColor(modelData.kind) }
@@ -741,44 +883,274 @@ ApplicationWindow {
                 onToggled: backend.setLoginStart(checked)
                 Layout.fillWidth: true
             }
-            Button { text: window.tr("Choose folders"); flat: true; enabled: !window.signedOut; onClicked: folders.showPicker() }
-            Button { text: window.tr("Account"); flat: true; onClicked: accountMenu.open() }
+            Button { text: window.tr("Choose folders"); flat: true; enabled: !window.signedOut; onClicked: window.chooseFolders() }
+            Button { text: window.tr("Accounts"); flat: true; onClicked: accountsWindow.open() }
         }
     }
 
-    Popup {
-        id: accountMenu
-        modal: true
-        anchors.centerIn: parent
-        width: Math.min(window.width - 40, 380)
-        padding: 18
+    Window {
+        id: accountsWindow
+        title: window.tr("Accounts")
+        width: 480
+        height: 560
+        minimumWidth: 420
+        minimumHeight: 420
+        color: palette.window
+        modality: Qt.ApplicationModal
+
+        function open() {
+            show()
+            raise()
+            requestActivate()
+        }
+
         ColumnLayout {
             anchors.fill: parent
-            spacing: 14
-            Label { text: window.tr("Account"); font.weight: Font.DemiBold; font.pointSize: Qt.application.font.pointSize * 1.15 }
-            Label { visible: backend.account !== ""; text: window.tr("Signed in as %1", backend.account); color: window.muted; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true }
+            spacing: 0
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.margins: 22
+                Layout.bottomMargin: 0
+                spacing: 6
+                Label { text: window.tr("Your Google accounts"); font.pointSize: Qt.application.font.pointSize * 1.6; font.weight: Font.DemiBold }
+                Label { text: window.tr("Each account syncs into its own folder inside GoogleDrive."); color: window.muted; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            }
+
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.topMargin: 16
+                contentWidth: availableWidth
+                clip: true
+
+                ColumnLayout {
+                    width: parent.width
+                    spacing: 0
+
+                    Card {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 14
+                        Layout.rightMargin: 14
+                        implicitHeight: accountColumn.implicitHeight
+
+                        ColumnLayout {
+                            id: accountColumn
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            spacing: 0
+
+                            Repeater {
+                                model: window.accounts
+                                delegate: ColumnLayout {
+                                    id: accountRow
+                                    required property var modelData
+                                    required property int index
+                                    spacing: 0
+                                    Layout.fillWidth: true
+                                    RowLayout {
+                                        Layout.fillWidth: true
+                                        Layout.margins: 12
+                                        spacing: 12
+                                        Avatar { email: accountRow.modelData.email; index: accountRow.index }
+                                        ColumnLayout {
+                                            spacing: 2
+                                            Layout.fillWidth: true
+                                            Label { text: accountRow.modelData.email; font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }
+                                            Label {
+                                                text: "GoogleDrive / " + window.baseName(accountRow.modelData.root) + " · " + (accountRow.modelData.selected.length === 1 ? window.tr("1 folder") : window.tr("%1 folders", accountRow.modelData.selected.length))
+                                                color: window.muted
+                                                elide: Text.ElideMiddle
+                                                font.pointSize: Qt.application.font.pointSize * 0.9
+                                                Layout.fillWidth: true
+                                            }
+                                        }
+                                        Button { text: window.tr("Folders…"); onClicked: folders.showPicker(accountRow.modelData.id) }
+                                        ToolButton {
+                                            icon.name: "overflow-menu"
+                                            text: "⋮"
+                                            display: AbstractButton.IconOnly
+                                            Accessible.name: window.tr("More options for %1", accountRow.modelData.email)
+                                            onClicked: rowMenu.popup()
+                                            Menu {
+                                                id: rowMenu
+                                                MenuItem { text: window.tr("Open its folder"); onTriggered: window.openIn(accountRow.modelData.root, "") }
+                                                MenuItem {
+                                                    text: accountRow.modelData.paused ? window.tr("Resume this account") : window.tr("Pause this account")
+                                                    onTriggered: backend.setSyncPaused(accountRow.modelData.id, !accountRow.modelData.paused)
+                                                }
+                                                MenuSeparator {}
+                                                MenuItem { text: window.tr("Remove account…"); onTriggered: removeDialog.ask(accountRow.modelData) }
+                                            }
+                                        }
+                                    }
+                                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: window.line }
+                                }
+                            }
+
+                            ItemDelegate {
+                                Layout.fillWidth: true
+                                icon.name: "list-add"
+                                text: window.tr("Add another account")
+                                enabled: window.accounts.length > 0
+                                onClicked: addAccount.begin()
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: window.line }
+
             RowLayout {
                 Layout.fillWidth: true
+                Layout.margins: 16
                 Label { text: window.tr("Language"); Layout.fillWidth: true }
                 LanguageBox {}
             }
-            Button {
-                text: window.signedOut ? window.tr("Connect Google account") : window.tr("Sign out")
-                Layout.alignment: Qt.AlignRight
-                onClicked: {
-                    accountMenu.close()
-                    if (window.signedOut)
-                        wizard.begin()
-                    else
-                        backend.signOut()
+        }
+    }
+
+    Dialog {
+        id: removeDialog
+        property var account: null
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(window.width - 40, 400)
+        modal: true
+        title: account ? window.tr("Remove %1?", account.email) : ""
+        standardButtons: Dialog.Cancel | Dialog.Ok
+        Component.onCompleted: standardButton(Dialog.Ok).text = Qt.binding(() => window.tr("Remove"))
+        function ask(a) {
+            account = a
+            window.showWindow()
+            open()
+        }
+        onAccepted: if (account) backend.removeAccount(account.id)
+        Label {
+            width: parent.width
+            wrapMode: Text.Wrap
+            text: removeDialog.account ? window.tr("drivesync stops syncing this account and forgets its sign-in. Its files stay on this computer in %1.", removeDialog.account.root) : ""
+        }
+    }
+
+    component Avatar: Rectangle {
+        property string email
+        property int index
+        readonly property var colors: ["#3a5f8f", "#3f7a5c", "#7a4f8f", "#8f5a3a", "#3a7a8f"]
+        Layout.preferredWidth: 36
+        Layout.preferredHeight: 36
+        radius: 18
+        color: colors[index % colors.length]
+        Label { anchors.centerIn: parent; text: parent.email.charAt(0).toUpperCase(); color: "#ffffff"; font.weight: Font.DemiBold }
+    }
+
+    Window {
+        id: addAccount
+        title: window.tr("Add another account")
+        width: 520
+        height: 620
+        minimumWidth: 440
+        minimumHeight: 520
+        color: palette.window
+        modality: Qt.ApplicationModal
+        property bool attempted: false
+
+        function begin() {
+            attempted = false
+            show()
+            raise()
+            requestActivate()
+        }
+
+        onClosing: backend.cancelSignIn()
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 0
+
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                contentWidth: availableWidth
+                clip: true
+                ColumnLayout {
+                    width: parent.width
+                    spacing: 16
+                    Item { Layout.preferredHeight: 14 }
+                    Label { text: window.tr("Add another Google account"); font.pointSize: Qt.application.font.pointSize * 1.6; font.weight: Font.DemiBold; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.leftMargin: 28; Layout.rightMargin: 28 }
+                    Label { text: window.tr("Your key from the first setup works for every account, so this takes one step: sign in with the other account and allow drivesync."); color: window.muted; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.leftMargin: 28; Layout.rightMargin: 28 }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 28
+                        Layout.rightMargin: 28
+                        spacing: 14
+                        Step { number: 1; text: window.tr("In the browser, choose <b>Use another account</b> and sign in with it.") }
+                        Step { number: 2; text: window.tr("Google warns that the app isn't verified, just like the first time. Click <b>Continue</b>, then allow access to Drive.") }
+                        Step { number: 3; text: window.tr("Pick its folders. They go into <b>GoogleDrive / its email</b>.") }
+                    }
+                    BusyIndicator { running: backend.signingIn; visible: running; Layout.alignment: Qt.AlignHCenter }
+                    Label {
+                        visible: addAccount.attempted && !backend.signingIn && backend.signInError !== ""
+                        text: window.tr("Couldn't add the account") + ": " + backend.signInError
+                        color: window.warn
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 28
+                        Layout.rightMargin: 28
+                    }
+                    Label {
+                        text: window.tr("Is this account in a company or school? Its administrator may block apps that aren't approved. If sign-in is refused, ask them to allow drivesync, or set it up with that account's own key.")
+                        color: window.muted
+                        wrapMode: Text.Wrap
+                        font.pointSize: Qt.application.font.pointSize * 0.9
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 28
+                        Layout.rightMargin: 28
+                    }
+                }
+            }
+
+            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: window.line }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.margins: 18
+                Button { text: window.tr("Cancel"); onClicked: addAccount.close() }
+                Item { Layout.fillWidth: true }
+                Button {
+                    highlighted: true
+                    enabled: !backend.signingIn
+                    text: addAccount.attempted && backend.signInError !== "" ? window.tr("Try again") : window.tr("Sign in with Google")
+                    onClicked: {
+                        addAccount.attempted = true
+                        backend.addAccount()
+                    }
                 }
             }
         }
     }
 
+    component Step: RowLayout {
+        id: stepRow
+        property int number
+        property string text
+        spacing: 14
+        Layout.fillWidth: true
+        Rectangle {
+            Layout.preferredWidth: 26
+            Layout.preferredHeight: 26
+            Layout.alignment: Qt.AlignTop
+            radius: 13
+            color: Qt.alpha(palette.highlight, 0.18)
+            Label { anchors.centerIn: parent; text: stepRow.number; color: palette.highlight; font.weight: Font.DemiBold }
+        }
+        Label { text: stepRow.text; textFormat: Text.StyledText; wrapMode: Text.Wrap; lineHeight: 1.2; Layout.fillWidth: true; Layout.topMargin: 3 }
+    }
+
     Window {
         id: folders
-        title: window.tr("Choose folders")
+        title: window.multiple && folders.account ? window.tr("Choose folders for %1", folders.account.email) : window.tr("Choose folders")
         width: 520
         height: 660
         minimumWidth: 420
@@ -797,12 +1169,16 @@ ApplicationWindow {
         readonly property real largeBytes: 20e9
         readonly property bool tooBig: sized && freeBytes >= 0 && pickedBytes > freeBytes
 
-        function showPicker() {
+        property string accountId: ""
+        readonly property var account: window.accounts.find(a => a.id === accountId) || null
+
+        function showPicker(id) {
+            accountId = id
             choices = []
             filter = ""
             search.text = ""
-            freeBytes = backend.freeSpace()
-            backend.loadFolders()
+            freeBytes = backend.freeSpace(id)
+            backend.loadFolders(id)
             show()
             raise()
             requestActivate()
@@ -1003,7 +1379,7 @@ ApplicationWindow {
                     highlighted: true
                     enabled: !backend.foldersLoading && backend.foldersError === "" && !folders.tooBig
                     onClicked: {
-                        backend.saveFolders(JSON.stringify(folders.picked.map(c => c.name)))
+                        backend.saveFolders(folders.accountId, JSON.stringify(folders.picked.map(c => c.name)))
                         folders.close()
                         window.showWindow()
                     }
@@ -1290,7 +1666,7 @@ ApplicationWindow {
                         Instruction { number: 1; text: wizard.tr("Choose your Google account.") }
                         Instruction { number: 2; text: wizard.tr("Google will say <b>\"Google hasn't verified this app\"</b>. That's expected: the app is the one you just made, and only you use it.") + "<br>" + wizard.tr("Click <b>Continue</b>. Older screens call it Advanced → Go to drivesync.") }
                         Instruction { number: 3; text: wizard.tr("Tick <b>See, edit, create and delete your Google Drive files</b> and click <b>Continue</b>. This window moves on by itself.") }
-                        Hint { visible: wizard.signInFailed; text: wizard.tr("Sign-in didn't finish. Check that you clicked Allow, then try again.") }
+                        Hint { visible: wizard.signInFailed; text: backend.signInError !== "" ? backend.signInError : wizard.tr("Sign-in didn't finish. Check that you clicked Allow, then try again.") }
                         Button {
                             id: details
                             visible: backend.signInLog !== ""

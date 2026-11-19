@@ -1,6 +1,7 @@
 #include "drivesync-gui/cpp/run.h"
 
 #include <QtCore/QStorageInfo>
+#include <QtCore/QDir>
 #include <QtGui/QIcon>
 #include <QtQml/QQmlApplicationEngine>
 #include <QtNetwork/QLocalServer>
@@ -20,6 +21,8 @@
     static char *argv[] = {name, nullptr};
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("drivesync"));
+    QApplication::setOrganizationName(QStringLiteral("drivesync"));
+    QApplication::setOrganizationDomain(QStringLiteral("celso-alexandre.github.io"));
     QApplication::setApplicationDisplayName(QStringLiteral("drivesync"));
     QApplication::setDesktopFileName(QStringLiteral("io.github.celso_alexandre.drivesync"));
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/qt/qml/drivesync/icons/drivesync.svg")));
@@ -29,7 +32,11 @@
     const QByteArray flatpakId = qgetenv("FLATPAK_ID");
     const QByteArray runtimeDir = qgetenv("XDG_RUNTIME_DIR");
     if (!flatpakId.isEmpty() && !runtimeDir.isEmpty()) {
-        serverName = QString::fromLocal8Bit(runtimeDir) + QStringLiteral("/app/") + QString::fromLocal8Bit(flatpakId) + QStringLiteral("/drivesync-gui.sock");
+        const QString shared = QString::fromLocal8Bit(runtimeDir) + QStringLiteral("/app/") + QString::fromLocal8Bit(flatpakId);
+        const QString socketPath = shared + QStringLiteral("/drivesync-gui.sock");
+        if (socketPath.toLocal8Bit().size() < 100 && QDir().mkpath(shared)) {
+            serverName = socketPath;
+        }
     }
     {
         QLocalSocket probe;
@@ -44,6 +51,7 @@
     QLocalServer server;
     server.setSocketOptions(QLocalServer::UserAccessOption);
     if (!server.listen(serverName)) {
+        qCritical("drivesync: cannot start the single-instance socket %s: %s", qPrintable(serverName), qPrintable(server.errorString()));
         return 1;
     }
 
@@ -51,6 +59,7 @@
     engine.setInitialProperties({{QStringLiteral("startHidden"), start_hidden}});
     engine.load(QUrl(QStringLiteral("qrc:/qt/qml/drivesync/qml/Main.qml")));
     if (engine.rootObjects().isEmpty()) {
+        qCritical("drivesync: the window could not be loaded");
         return 1;
     }
     QObject *root = engine.rootObjects().constFirst();
